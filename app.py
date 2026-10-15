@@ -47,7 +47,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*Gezielte Etagen-Zuordnung & flexible Raum-Auswertung*")
+    st.markdown("*Automatisierte CAD-Plan-Auswertung & Etagen-Zuweisung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -64,7 +64,7 @@ if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
 st.subheader("📐 Grundriss-Upload & Etagen-Zuweisung")
-st.markdown("Laden Sie Ihre Pläne hoch. Für jede hochgeladene Datei können Sie im Anschluss exakt festlegen, zu welcher Etage sie gehört.")
+st.markdown("Laden Sie Ihre Pläne hoch, weisen Sie die Ziel-Etage zu und klicken Sie auf **Pläne auslesen**.")
 
 uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_multi")
 
@@ -77,18 +77,27 @@ if uploaded_files:
     for idx, uploaded_file in enumerate(uploaded_files):
         with cols[idx % len(cols)]:
             st.markdown(f"**Datei:** `{uploaded_file.name}`")
-            # Dropdown für die exakte Etagenwahl
+            # Intelligente Vorauserkennung für das Dropdown
+            default_idx = 1 # EG als Standard
+            fn_upper = uploaded_file.name.upper()
+            if "UG" in fn_upper or "KELLER" in fn_upper: default_idx = 0
+            elif "EG" in fn_upper: default_idx = 1
+            elif "OG" in fn_upper: default_idx = 2
+            elif "DG" in fn_upper or "DACH" in fn_upper: default_idx = 3
+
             chosen_etage = st.selectbox(
                 "Ziel-Etage wählen:",
                 options=list(etagen_definitionen.keys()),
+                index=default_idx,
                 format_func=lambda x: etagen_definitionen[x],
                 key=f"assign_{uploaded_file.name}"
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    # Button zum Einlesen basierend auf der manuellen Zuordnung
+    # Button zum Einlesen
     if st.button("🔄 Pläne mit gewählter Zuordnung auslesen"):
-        temp_etagen = {k: [] for k in etagen_definitionen.keys()}
+        temp_etagen = st.session_state.etagen_daten.copy()
+        
         try:
             for uploaded_file in uploaded_files:
                 target_etage = file_assignments[uploaded_file.name]
@@ -99,10 +108,7 @@ if uploaded_files:
                     lines = [line.strip() for line in text.split('\n') if line.strip()]
                     
                     for i, line in enumerate(lines):
-                        area = None
-                        room_name = ""
-
-                        # Erkennung von Flächenformaten
+                        # CAD-spezifische Erkennung: Suche nach "m²" oder "m 2"
                         if "m²" in line or "m 2" in line or "F:" in line:
                             match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
                             if not match and "F:" in line:
@@ -112,38 +118,50 @@ if uploaded_files:
                                 try:
                                     val_str = match.group(1).replace(',', '.')
                                     area = float(val_str)
-                                    if i > 0:
-                                        room_name = lines[i-1]
-                                    if not room_name or len(room_name) < 2 or any(char.isdigit() for char in room_name):
-                                        if i > 1:
-                                            room_name = lines[i-2]
+                                    
+                                    if 1.0 < area < 500:
+                                        # Versuche, den Raumamen aus der gleichen Zeile oder direkter Umgebung zu finden
+                                        line_clean = re.sub(r'[0-9.,]+\s*m[²2]', '', line).strip()
+                                        room_name = ""
+                                        
+                                        if len(line_clean) > 1 and not line_clean.isdigit():
+                                            room_name = line_clean
+                                        else:
+                                            # Suche in Nachbarzeilen
+                                            for offset in [-1, 1, -2, 2]:
+                                                idx_check = i + offset
+                                                if 0 <= idx_check < len(lines):
+                                                    candidate = lines[idx_check]
+                                                    if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt"]):
+                                                        room_name = candidate
+                                                        break
+                                        
+                                        if not room_name:
+                                            room_name = "Raum"
+
+                                        # Bereinigungen des Namens
+                                        room_name = room_name.replace("m²", "").strip()
+
+                                        va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
+                                        kreise = max(1, round(area / 18))
+                                        
+                                        # Verhindere Duplikate derselben Fläche in derselben Etage
+                                        existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
+                                        if area not in existing_areas:
+                                            temp_etagen[target_etage].append({
+                                                "Raumbezeichnung": room_name,
+                                                "Fläche [m²]": area,
+                                                "Verlegeabstand [cm]": va,
+                                                "Heizkreise": kreise
+                                            })
                                 except ValueError:
                                     pass
-
-                        if area is not None and 1.0 < area < 500:
-                            if any(x in room_name for x in ["Allplan", "Beetzendorf", "Blatt", "Architekt", "Stg", "Mauer", "ÜNN", "H/B"]):
-                                continue
-                            if not room_name:
-                                room_name = "Raum"
-
-                            va = 10 if "bad" in room_name.lower() or "wc" in room_name.lower() or "duschbad" in room_name.lower() else 15
-                            kreise = max(1, round(area / 18))
-                            
-                            existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
-                            if area not in existing_areas:
-                                temp_etagen[target_etage].append({
-                                    "Raumbezeichnung": room_name,
-                                    "Fläche [m²]": area,
-                                    "Verlegeabstand [cm]": va,
-                                    "Heizkreise": kreise
-                                })
             
             st.session_state.etagen_daten = temp_etagen
-            st.success("Erfolgreich eingelesen! Die Tabellen wurden entsprechend Ihrer Etagen-Zuweisung aktualisiert.")
+            st.success("Pläne erfolgreich ausgelesen! Die Tabellen wurden aktualisiert.")
         except Exception as e:
             st.error(f"Fehler beim Auslesen: {e}")
 else:
-    # Wenn keine Dateien hochgeladen sind, Tabellen leeren
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
 st.markdown("---")
