@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung
+import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung & Block-Analyse
 from PIL import Image
 import io
 import re
@@ -81,7 +81,7 @@ if uploaded_files:
             try:
                 file_extension = uploaded_file.name.split('.')[-1].lower()
                 page_images = []
-                page_texts = []
+                pdf_bytes = None
                 
                 if file_extension == 'pdf':
                     pdf_bytes = uploaded_file.read()
@@ -91,15 +91,13 @@ if uploaded_files:
                         img_data = pix.tobytes("jpg")
                         image = Image.open(io.BytesIO(img_data))
                         page_images.append(image)
-                        page_texts.append(page.get_text())
                 else:
                     image = Image.open(uploaded_file)
                     page_images.append(image)
-                    page_texts.append("")
                 
                 st.session_state.converted_data[uploaded_file.name] = {
                     "images": page_images,
-                    "texts": page_texts
+                    "pdf_bytes": pdf_bytes
                 }
             except Exception as e:
                 st.error(f"Fehler bei der Verarbeitung von {uploaded_file.name}: {e}")
@@ -132,62 +130,92 @@ if uploaded_files:
     if st.button("🔄 Pläne auslesen & Tabellen befüllen"):
         temp_etagen = {k: [] for k in etagen_definitionen.keys()}
         
+        ungueltige_begriffe = [
+            "fundament", "abbruch", "dampfsperre", "bodenplatte", "pos", "wand", 
+            "gk", "u:", "lung", "et", "blatt", "vorabzug", "stand", "architekt", 
+            "allplan", "beetzendorf", "hinweis", "massstab", "datum", "bauherr",
+            "projekt", "über", "ünn", "schnitt", "ansicht", "folie", "legende",
+            "ausführungsplan", "produktionsplan", "liter", "lepust"
+        ]
+        
         try:
             for uploaded_file in uploaded_files:
                 target_etage = file_assignments[uploaded_file.name]
-                if uploaded_file.name in st.session_state.converted_data:
-                    for text in st.session_state.converted_data[uploaded_file.name]["texts"]:
-                        lines = [line.strip() for line in text.split('\n') if line.strip()]
+                file_data = st.session_state.converted_data.get(uploaded_file.name, {})
+                pdf_bytes = file_data.get("pdf_bytes")
+                
+                if pdf_bytes:
+                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    for page in doc:
+                        # Verwende Textblöcke zur räumlichen Zuordnung von Raumname und Fläche
+                        blocks = page.get_text("blocks")
+                        text_blocks = [b for b in blocks if b[6] == 0]  # Typ 0 sind reine Textblöcke
                         
-                        for i, line in enumerate(lines):
-                            if "m²" in line or "m 2" in line or "F:" in line or "m2" in line:
-                                match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
-                                if not match and "F:" in line:
-                                    match = re.search(r"F:\s*([0-9.,]+)", line)
-                                    
-                                if match:
-                                    try:
-                                        val_str = match.group(1).replace(',', '.')
-                                        area = float(val_str)
-                                        
-                                        if 1.0 < area < 500:
-                                            room_name = ""
-                                            clean_line = re.sub(r'[0-9.,]+\s*m[²2]', '', line).strip()
-                                            
-                                            if len(clean_line) > 1 and not clean_line.isdigit():
-                                                room_name = clean_line
-                                            else:
-                                                for offset in [-1, 1, -2, 2]:
-                                                    idx_check = i + offset
-                                                    if 0 <= idx_check < len(lines):
-                                                        candidate = lines[idx_check]
-                                                        if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt", "DATUM", "PROJEKT", "BAUHERR"]):
-                                                            room_name = candidate
-                                                            break
-                                            
-                                            if not room_name or room_name.replace('.', '', 1).isdigit():
-                                                room_name = "Raum"
-
-                                            room_name = room_name.replace("m²", "").strip()
-
-                                            va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
-                                            
-                                            rohr_gesamt = area * (100.0 / va + 1.5)
-                                            kreise = 2 if area >= 17.5 else 1
-                                            while (rohr_gesamt / kreise) > 125.0:
-                                                kreise += 1
-
-                                            existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
-                                            if area not in existing_areas:
-                                                temp_etagen[target_etage].append({
-                                                    "Status": "Beheizt",
-                                                    "Raumbezeichnung": room_name,
-                                                    "Fläche [m²]": area,
-                                                    "Verlegeabstand [cm]": va,
-                                                    "Heizkreise": kreise
-                                                })
-                                    except ValueError:
-                                        pass
+                        area_items = []
+                        for b in text_blocks:
+                            txt = b[4].strip()
+                            match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2|m2)', txt)
+                            if not match and "F:" in txt:
+                                match = re.search(r"F:\s*([0-9.,]+)", txt)
+                            if match:
+                                try:
+                                    val_str = match.group(1).replace(',', '.')
+                                    area = float(val_str)
+                                    if 1.0 < area < 500:
+                                        area_items.append((b, area))
+                                except ValueError:
+                                    pass
+                        
+                        # Für jede gefundene Fläche den nächstgelegenen gültigen Textblock als Raumname suchen
+                        for a_block, area in area_items:
+                            a_cx = (a_block[0] + a_block[2]) / 2
+                            a_cy = (a_block[1] + a_block[3]) / 2
+                            
+                            best_room_name = "Raum"
+                            min_dist = float('inf')
+                            
+                            for tb in text_blocks:
+                                if tb == a_block:
+                                    continue
+                                tb_text = tb[4].strip().replace('\n', ' ')
+                                tb_lower = tb_text.lower()
+                                
+                                if any(term in tb_lower for term in ungueltige_begriffe):
+                                    continue
+                                if "m²" in tb_text or "m2" in tb_text or "f:" in tb_lower or tb_text.replace('.', '', 1).isdigit():
+                                    continue
+                                if len(tb_text) < 2:
+                                    continue
+                                
+                                tb_cx = (tb[0] + tb[2]) / 2
+                                tb_cy = (tb[1] + tb[3]) / 2
+                                
+                                dist = np.sqrt((a_cx - tb_cx)**2 + (a_cy - tb_cy)**2)
+                                
+                                # Raumname muss sich in räumlicher Nähe zur Flächenangabe befinden
+                                if dist < min_dist and dist < 250:
+                                    min_dist = dist
+                                    best_room_name = tb_text
+                            
+                            best_room_name = re.sub(r'[^a-zA-ZäöüÄÖÜß0-9\s\-_]', '', best_room_name).strip()
+                            if not best_room_name or best_room_name.replace('.', '', 1).isdigit():
+                                best_room_name = "Raum"
+                            
+                            va = 10 if any(b in best_room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
+                            rohr_gesamt = area * (100.0 / va + 1.5)
+                            kreise = 2 if area >= 17.5 else 1
+                            while (rohr_gesamt / kreise) > 125.0:
+                                kreise += 1
+                            
+                            existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
+                            if area not in existing_areas:
+                                temp_etagen[target_etage].append({
+                                    "Status": "Beheizt",
+                                    "Raumbezeichnung": best_room_name,
+                                    "Fläche [m²]": area,
+                                    "Verlegeabstand [cm]": va,
+                                    "Heizkreise": kreise
+                                })
                                         
             st.session_state.etagen_daten = temp_etagen
             st.success("Auswertung erfolgreich abgeschlossen! Die Etagen wurden befüllt.")
@@ -213,7 +241,6 @@ aktive_etagen = set()
 if uploaded_files and 'file_assignments' in locals():
     for f_name, etg in file_assignments.items():
         aktive_etagen.add(etg)
-# Prüfe zusätzlich, ob bereits Daten im Session State für eine Etage existieren
 for etg_k, etg_v in st.session_state.etagen_daten.items():
     if len(etg_v) > 0:
         aktive_etagen.add(etg_k)
@@ -224,7 +251,7 @@ warnungen_gesamt = []
 if aktive_etagen:
     for etage_key, etage_titel in etagen_definitionen.items():
         if etage_key not in aktive_etagen:
-            continue  # Überspringe Etagen, die keine Zuweisung haben
+            continue
             
         st.markdown(f"### 🏢 {etage_titel} ({etage_key})")
         
