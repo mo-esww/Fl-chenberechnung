@@ -49,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-zu-JPG Konvertierung & smarte CAD-Raumerfassung*")
+    st.markdown("*PDF-Upload, Etagen-Zuordnung & getrennte Auswertung (Beheizt / Unbeheizt)*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -86,13 +86,10 @@ if uploaded_files:
                 page_images = []
                 page_texts = []
                 for page in doc:
-                    # JPG-Vorschau erzeugen
                     pix = page.get_pixmap(dpi=150)
                     img_data = pix.tobytes("jpg")
                     image = Image.open(io.BytesIO(img_data))
                     page_images.append(image)
-                    
-                    # Text aus der PDF-Seite extrahieren
                     page_texts.append(page.get_text())
                 
                 st.session_state.converted_data[uploaded_file.name] = {
@@ -170,10 +167,12 @@ if uploaded_files:
 
                                             va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
                                             kreise = max(1, round(area / 18))
-                                            
+                                            beheizt = True
+
                                             existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
                                             if area not in existing_areas:
                                                 temp_etagen[target_etage].append({
+                                                    "Beheizt": beheizt,
                                                     "Raumbezeichnung": room_name,
                                                     "Fläche [m²]": area,
                                                     "Verlegeabstand [cm]": va,
@@ -194,6 +193,7 @@ else:
 st.markdown("---")
 
 spalten_struktur = {
+    "Beheizt": [],
     "Raumbezeichnung": [],
     "Fläche [m²]": [],
     "Verlegeabstand [cm]": [],
@@ -211,6 +211,8 @@ for etage_key, etage_titel in etagen_definitionen.items():
         df_etage = pd.DataFrame(columns=list(spalten_struktur.keys()))
     else:
         df_etage = pd.DataFrame(data=current_data)
+        if "Beheizt" not in df_etage.columns:
+            df_etage.insert(0, "Beheizt", True)
     
     edited_df = st.data_editor(
         df_etage, 
@@ -222,39 +224,57 @@ for etage_key, etage_titel in etagen_definitionen.items():
     
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
     
-    e_flaeche = edited_df["Fläche [m²]"].sum() if not edited_df.empty and "Fläche [m²]" in edited_df.columns else 0
-    e_kreise = int(edited_df["Heizkreise"].sum()) if not edited_df.empty and "Heizkreise" in edited_df.columns else 0
+    # Berechnungen für beheizte und unbeheizte Flächen trennen
+    if not edited_df.empty and "Beheizt" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
+        df_active = edited_df[edited_df["Beheizt"] == True]
+        df_inactive = edited_df[edited_df["Beheizt"] == False]
+        
+        e_flaeche = df_active["Fläche [m²]"].sum() if not df_active.empty else 0
+        e_unbeheizt = df_inactive["Fläche [m²]"].sum() if not df_inactive.empty else 0
+        e_kreise = int(df_active["Heizkreise"].sum()) if not df_active.empty and "Heizkreise" in df_active.columns else 0
+        
+        e_rohr = 0
+        if not df_active.empty and "Verlegeabstand [cm]" in df_active.columns:
+            for _, row in df_active.iterrows():
+                va = row.get("Verlegeabstand [cm]", 0)
+                fl = row.get("Fläche [m²]", 0)
+                if pd.notna(va) and pd.notna(fl) and va > 0:
+                    e_rohr += fl * (100.0 / va + 1.5)
+    else:
+        e_flaeche, e_unbeheizt, e_kreise, e_rohr = 0, 0, 0, 0
     
-    e_rohr = 0
-    if not edited_df.empty and "Verlegeabstand [cm]" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
-        for _, row in edited_df.iterrows():
-            va = row.get("Verlegeabstand [cm]", 0)
-            fl = row.get("Fläche [m²]", 0)
-            if pd.notna(va) and pd.notna(fl) and va > 0:
-                e_rohr += fl * (100.0 / va + 1.5)
+    etagen_ergebnisse[etage_key] = {
+        "flaeche": e_flaeche, 
+        "unbeheizt": e_unbeheizt, 
+        "kreise": e_kreise, 
+        "rohr": e_rohr
+    }
     
-    etagen_ergebnisse[etage_key] = {"flaeche": e_flaeche, "kreise": e_kreise, "rohr": e_rohr}
-    
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric(label=f"Fläche {etage_key}", value=f"{e_flaeche:.2f} m²")
+        st.metric(label=f"Beheizte Fläche {etage_key}", value=f"{e_flaeche:.2f} m²")
     with col2:
-        st.metric(label=f"Heizkreise {etage_key} (Verteiler)", value=f"{e_kreise} Kreise")
+        st.metric(label=f"Unbeheizte Fläche {etage_key}", value=f"{e_unbeheizt:.2f} m²")
     with col3:
-        st.metric(label=f"Rohrbedarf {etage_key}", value=f"{e_rohr:.0f} Meter")
+        st.metric(label=f"Heizkreise {etage_key}", value=f"{e_kreise} Kreise")
+    with col4:
+        st.metric(label=f"Rohrbedarf {etage_key}", value=f"{e_rohr:.0f} m")
         
     st.markdown("---")
 
 # --- Summiertes Gesamtergebnis ---
 total_flaeche = sum([res["flaeche"] for res in etagen_ergebnisse.values()])
+total_unbeheizt = sum([res["unbeheizt"] for res in etagen_ergebnisse.values()])
 total_rohr = sum([res["rohr"] for res in etagen_ergebnisse.values()])
 kreise_str = " | ".join([f"{k}: {res['kreise']}" for k, res in etagen_ergebnisse.items() if res['kreise'] > 0])
 
 st.subheader("📈 Summiertes Gesamtergebnis (Gesamtgebäude)")
-col_f1, col_f2, col_f3 = st.columns(3)
+col_f1, col_f2, col_f3, col_f4 = st.columns(4)
 with col_f1:
     st.metric(label="Gesamt-Beheizte Fläche", value=f"{total_flaeche:.2f} m²")
 with col_f2:
-    st.metric(label="Heizkreise je Verteiler", value=kreise_str if kreise_str else "0 Kreise")
+    st.metric(label="Gesamt-Unbeheizte Fläche", value=f"{total_unbeheizt:.2f} m²")
 with col_f3:
-    st.metric(label="Gesamter Rohrbedarf", value=f"{total_rohr:.0f} Meter")
+    st.metric(label="Heizkreise je Verteiler", value=kreise_str if kreise_str else "0 Kreise")
+with col_f4:
+    st.metric(label="Gesamter Rohrbedarf", value=f"{total_rohr:.0f} m")
