@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import fitz  # PyMuPDF für High-Performance PDF-zu-Bild-Konvertierung (ohne Poppler-Abhängigkeit)
+import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung
+import pytesseract  # OCR-Texterkennung auf den JPGs
 from PIL import Image
 import io
+import re
 
 # --- Seiten-Konfiguration & Corporate Design ---
 st.set_page_config(
@@ -48,7 +50,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload mit automatischer JPG-Konvertierung für präzise Raum-Erfassung*")
+    st.markdown("*PDF-zu-JPG Konvertierung & automatische OCR-Raumerfassung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -64,14 +66,13 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 PDF-Upload & Automatische JPG-Konvertierung")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App wandelt diese im Hintergrund in hochauflösende JPG-Bilder um.")
+st.subheader("📐 PDF-Upload, JPG-Konvertierung & OCR-Auswertung")
+st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App wandelt diese in JPGs um und liest die Räume vollautomatisch über Texterkennung aus.")
 
-# PDF-Uploader
-uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_to_jpg_upload")
+uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_ocr_upload")
 
 if uploaded_files:
-    st.markdown("### 🗂️ Konvertierte JPG-Ansicht & Etagen-Zuweisung")
+    st.markdown("### 🗂️ Konvertierte Pläne & Etagen-Zuweisung")
     file_assignments = {}
     
     if "converted_jpgs" not in st.session_state:
@@ -80,32 +81,30 @@ if uploaded_files:
     for uploaded_file in uploaded_files:
         if uploaded_file.name not in st.session_state.converted_jpgs:
             try:
-                # PDF-Bytes direkt über PyMuPDF in Bilder konvertieren
                 pdf_bytes = uploaded_file.read()
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 
                 page_images = []
                 for page in doc:
-                    pix = page.get_pixmap(dpi=150)
+                    # Höhere DPI (200) für optimale OCR-Erkennung
+                    pix = page.get_pixmap(dpi=200)
                     img_data = pix.tobytes("jpg")
                     image = Image.open(io.BytesIO(img_data))
                     page_images.append(image)
                 
                 st.session_state.converted_jpgs[uploaded_file.name] = page_images
             except Exception as e:
-                st.error(f"Fehler bei der JPG-Konvertierung von {uploaded_file.name}: {e}")
+                st.error(f"Fehler bei der Konvertierung von {uploaded_file.name}: {e}")
 
     cols = st.columns(len(uploaded_files))
     for idx, uploaded_file in enumerate(uploaded_files):
         with cols[idx % len(cols)]:
             st.markdown(f"**📄 Datei:** `{uploaded_file.name}`")
             
-            # Zeige die konvertierten JPG-Seiten als Vorschau
             if uploaded_file.name in st.session_state.converted_jpgs:
                 for page_idx, img in enumerate(st.session_state.converted_jpgs[uploaded_file.name]):
-                    st.image(img, caption=f"Seite {page_idx+1} (als JPG konvertiert)", use_container_width=True)
+                    st.image(img, caption=f"Seite {page_idx+1} (JPG-Ansicht)", use_container_width=True)
 
-            # Intelligente Vorauserkennung für das Etagen-Dropdown
             default_idx = 1
             fn_upper = uploaded_file.name.upper()
             if "UG" in fn_upper or "KELLER" in fn_upper: default_idx = 0
@@ -122,8 +121,68 @@ if uploaded_files:
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    if st.button("🔄 Konvertierte Pläne übernehmen"):
-        st.success("PDFs wurden erfolgreich in JPGs konvertiert und den Etagen zugewiesen!")
+    if st.button("🔄 Pläne per OCR auslesen & Tabellen befüllen"):
+        temp_etagen = {k: [] for k in etagen_definitionen.keys()}
+        
+        try:
+            for uploaded_file in uploaded_files:
+                target_etage = file_assignments[uploaded_file.name]
+                if uploaded_file.name in st.session_state.converted_jpgs:
+                    for img in st.session_state.converted_jpgs[uploaded_file.name]:
+                        # OCR auf das konvertierte JPG anwenden (Deutsch + Englisch)
+                        ocr_text = pytesseract.image_to_string(img, lang='deu+eng')
+                        lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
+                        
+                        for i, line in enumerate(lines):
+                            # Suche nach Flächenangaben im JPG-Text (z.B. "21.05 m²")
+                            if "m²" in line or "m 2" in line or "F:" in line:
+                                match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
+                                if not match and "F:" in line:
+                                    match = re.search(r"F:\s*([0-9.,]+)", line)
+                                    
+                                if match:
+                                    try:
+                                        val_str = match.group(1).replace(',', '.')
+                                        area = float(val_str)
+                                        
+                                        if 1.0 < area < 500:
+                                            room_name = ""
+                                            clean_line = re.sub(r'[0-9.,]+\s*m[²2]', '', line).strip()
+                                            
+                                            if len(clean_line) > 1 and not clean_line.isdigit():
+                                                room_name = clean_line
+                                            else:
+                                                for offset in [-1, 1, -2, 2]:
+                                                    idx_check = i + offset
+                                                    if 0 <= idx_check < len(lines):
+                                                        candidate = lines[idx_check]
+                                                        if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt", "DATUM", "PROJEKT", "BAUHERR"]):
+                                                            room_name = candidate
+                                                            break
+                                            
+                                            if not room_name or room_name.replace('.', '', 1).isdigit():
+                                                room_name = "Raum"
+
+                                            room_name = room_name.replace("m²", "").strip()
+
+                                            va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
+                                            kreise = max(1, round(area / 18))
+                                            
+                                            existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
+                                            if area not in existing_areas:
+                                                temp_etagen[target_etage].append({
+                                                    "Raumbezeichnung": room_name,
+                                                    "Fläche [m²]": area,
+                                                    "Verlegeabstand [cm]": va,
+                                                    "Heizkreise": kreise
+                                                })
+                                    except ValueError:
+                                        pass
+                                        
+            st.session_state.etagen_daten = temp_etagen
+            st.success("OCR-Auswertung erfolgreich abgeschlossen! Die Tabellen wurden befüllt.")
+        except Exception as e:
+            st.error(f"Fehler bei der OCR-Auswertung: {e}")
 else:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
     if "converted_jpgs" in st.session_state:
@@ -155,7 +214,7 @@ for etage_key, etage_titel in etagen_definitionen.items():
         num_rows="dynamic", 
         use_container_width=True, 
         key=f"editor_{etage_key}",
-        placeholder="Klicken Sie hier, um Räume hinzuzufügen..."
+        placeholder="Klicken Sie auf den Button oben, um das JPG per OCR auszulesen, oder fügen Sie manuell Räume hinzu..."
     )
     
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
