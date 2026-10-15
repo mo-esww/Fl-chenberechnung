@@ -3,3 +3,5 @@ pandas
 numpy
 pypdf
 PyMuPDF
+Pillow
+pdf2image
