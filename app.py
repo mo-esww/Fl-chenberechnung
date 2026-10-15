@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung & saubere Textextraktion
+import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung
+import pytesseract  # OCR-Texterkennung direkt auf dem Bild
 from PIL import Image
 import io
 import re
@@ -49,7 +50,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & Heizkreis-Aufteilung ab 17,5 m²*")
+    st.markdown("*PDF-, PNG- & JPG-Upload, Etagen-Zuordnung & optimierte Heizkreis-Aufteilung ab 17,5 m²*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -65,13 +66,18 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 PDF-Upload, JPG-Konvertierung & Raumanalyse")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App konvertiert sie zu JPGs für die Vorschau und liest die Räume aus.")
+st.subheader("📐 Grundriss-Upload (PDF, PNG, JPG) & Raumanalyse")
+st.markdown("Laden Sie Ihre Pläne hoch. Die App verarbeitet sowohl PDFs als auch direkte Bilddateien per OCR.")
 
-uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_fitz_upload")
+uploaded_files = st.file_uploader(
+    "Grundrisse hochladen (PDF, PNG, JPG)", 
+    type=["pdf", "png", "jpg", "jpeg"], 
+    accept_multiple_files=True, 
+    key="multi_format_upload"
+)
 
 if uploaded_files:
-    st.markdown("### 🗂️ Konvertierte Pläne & Etagen-Zuweisung")
+    st.markdown("### 🗂️ Hochgeladene Pläne & Etagen-Zuweisung")
     file_assignments = {}
     
     if "converted_data" not in st.session_state:
@@ -80,22 +86,22 @@ if uploaded_files:
     for uploaded_file in uploaded_files:
         if uploaded_file.name not in st.session_state.converted_data:
             try:
-                pdf_bytes = uploaded_file.read()
-                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                
+                file_extension = uploaded_file.name.split('.')[-1].lower()
                 page_images = []
-                page_texts = []
-                for page in doc:
-                    pix = page.get_pixmap(dpi=150)
-                    img_data = pix.tobytes("jpg")
-                    image = Image.open(io.BytesIO(img_data))
-                    page_images.append(image)
-                    page_texts.append(page.get_text())
                 
-                st.session_state.converted_data[uploaded_file.name] = {
-                    "images": page_images,
-                    "texts": page_texts
-                }
+                if file_extension == 'pdf':
+                    pdf_bytes = uploaded_file.read()
+                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    for page in doc:
+                        pix = page.get_pixmap(dpi=250)
+                        img_data = pix.tobytes("jpg")
+                        image = Image.open(io.BytesIO(img_data))
+                        page_images.append(image)
+                elif file_extension in ['png', 'jpg', 'jpeg']:
+                    image = Image.open(uploaded_file)
+                    page_images.append(image)
+                
+                st.session_state.converted_data[uploaded_file.name] = page_images
             except Exception as e:
                 st.error(f"Fehler bei der Verarbeitung von {uploaded_file.name}: {e}")
 
@@ -105,8 +111,8 @@ if uploaded_files:
             st.markdown(f"**📄 Datei:** `{uploaded_file.name}`")
             
             if uploaded_file.name in st.session_state.converted_data:
-                for page_idx, img in enumerate(st.session_state.converted_data[uploaded_file.name]["images"]):
-                    st.image(img, caption=f"Seite {page_idx+1} (JPG-Ansicht)", use_container_width=True)
+                for page_idx, img in enumerate(st.session_state.converted_data[uploaded_file.name]):
+                    st.image(img, caption=f"Vorschau (Seite {page_idx+1})", use_container_width=True)
 
             default_idx = 1
             fn_upper = uploaded_file.name.upper()
@@ -124,18 +130,31 @@ if uploaded_files:
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    if st.button("🔄 Pläne auslesen & Tabellen befüllen"):
+    if st.button("🔄 Pläne automatisch auslesen & Tabellen befüllen"):
         temp_etagen = {k: [] for k in etagen_definitionen.keys()}
+        
+        ungueltige_begriffe = [
+            "fundament", "abbruch", "dampfsperre", "bodenplatte", "pos", "wand", 
+            "gk", "u:", "lung", "et", "blatt", "vorabzug", "stand", "architekt", 
+            "allplan", "beetzendorf", "hinweis", "massstab", "datum", "bauherr",
+            "projekt", "über", "ünn", "schnitt", "ansicht", "folie"
+        ]
         
         try:
             for uploaded_file in uploaded_files:
                 target_etage = file_assignments[uploaded_file.name]
                 if uploaded_file.name in st.session_state.converted_data:
-                    for text in st.session_state.converted_data[uploaded_file.name]["texts"]:
-                        lines = [line.strip() for line in text.split('\n') if line.strip()]
+                    for img in st.session_state.converted_data[uploaded_file.name]:
+                        ocr_text = pytesseract.image_to_string(img, lang='deu')
+                        lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
                         
                         for i, line in enumerate(lines):
-                            if "m²" in line or "m 2" in line or "F:" in line:
+                            line_lower = line.lower()
+                            
+                            if any(term in line_lower for term in ungueltige_begriffe):
+                                continue
+                                
+                            if "m²" in line or "m 2" in line or "F:" in line or "m2" in line:
                                 match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
                                 if not match and "F:" in line:
                                     match = re.search(r"F:\s*([0-9.,]+)", line)
@@ -145,25 +164,29 @@ if uploaded_files:
                                         val_str = match.group(1).replace(',', '.')
                                         area = float(val_str)
                                         
-                                        if 1.0 < area < 500:
+                                        if 2.0 <= area <= 150.0:
                                             room_name = ""
                                             clean_line = re.sub(r'[0-9.,]+\s*m[²2]', '', line).strip()
+                                            clean_line = re.sub(r'F:\s*[0-9.,]+', '', clean_line).strip()
                                             
-                                            if len(clean_line) > 1 and not clean_line.isdigit():
+                                            if len(clean_line) > 2 and not clean_line.replace('.', '').isdigit():
                                                 room_name = clean_line
                                             else:
                                                 for offset in [-1, 1, -2, 2]:
                                                     idx_check = i + offset
                                                     if 0 <= idx_check < len(lines):
                                                         candidate = lines[idx_check]
-                                                        if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt", "DATUM", "PROJEKT", "BAUHERR"]):
+                                                        candidate_lower = candidate.lower()
+                                                        if not any(term in candidate_lower for term in ungueltige_begriffe) and len(candidate) > 2:
                                                             room_name = candidate
                                                             break
                                             
                                             if not room_name or room_name.replace('.', '', 1).isdigit():
                                                 room_name = "Raum"
 
-                                            room_name = room_name.replace("m²", "").strip()
+                                            room_name = re.sub(r'[^a-zA-ZäöüÄÖÜß0-9\s]', '', room_name).strip()
+                                            if not room_name:
+                                                room_name = "Raum"
 
                                             va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
                                             
@@ -186,9 +209,9 @@ if uploaded_files:
                                         pass
                                         
             st.session_state.etagen_daten = temp_etagen
-            st.success("Auswertung erfolgreich abgeschlossen! Die Tabellen wurden befüllt.")
+            st.success("Automatische Auswertung erfolgreich abgeschlossen!")
         except Exception as e:
-            st.error(f"Fehler bei der Auswertung: {e}")
+            st.error(f"Fehler bei der automatischen Auswertung: {e}")
 else:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
     if "converted_data" in st.session_state:
@@ -219,7 +242,6 @@ for etage_key, etage_titel in etagen_definitionen.items():
         if "Status" not in df_etage.columns:
             df_etage.insert(0, "Status", "Beheizt")
     
-    # Dynamische Höhe ohne Scrollbalken
     num_rows = len(df_etage) if not df_etage.empty else 1
     editor_height = int((num_rows + 2) * 38) + 40
     
