@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pypdf
-from pdf2image import convert_from_bytes
+import fitz  # PyMuPDF für High-Performance PDF-zu-Bild-Konvertierung (ohne Poppler-Abhängigkeit)
 from PIL import Image
 import io
 
@@ -66,7 +65,7 @@ if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
 st.subheader("📐 PDF-Upload & Automatische JPG-Konvertierung")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App wandelt diese im Hintergrund in JPG-Bilder um, damit die Grundrisse visuell und verlustfrei verarbeitet werden können.")
+st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App wandelt diese im Hintergrund in hochauflösende JPG-Bilder um.")
 
 # PDF-Uploader
 uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_to_jpg_upload")
@@ -81,10 +80,18 @@ if uploaded_files:
     for uploaded_file in uploaded_files:
         if uploaded_file.name not in st.session_state.converted_jpgs:
             try:
-                # PDF-Bytes in JPG-Bilder konvertieren
+                # PDF-Bytes direkt über PyMuPDF in Bilder konvertieren
                 pdf_bytes = uploaded_file.read()
-                images = convert_from_bytes(pdf_bytes, dpi=150)
-                st.session_state.converted_jpgs[uploaded_file.name] = images
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                
+                page_images = []
+                for page in doc:
+                    pix = page.get_pixmap(dpi=150)
+                    img_data = pix.tobytes("jpg")
+                    image = Image.open(io.BytesIO(img_data))
+                    page_images.append(image)
+                
+                st.session_state.converted_jpgs[uploaded_file.name] = page_images
             except Exception as e:
                 st.error(f"Fehler bei der JPG-Konvertierung von {uploaded_file.name}: {e}")
 
