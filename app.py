@@ -49,7 +49,6 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & präzise Heizkreis-Aufteilung ab 17,5 m²*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -226,13 +225,12 @@ for etage_key, etage_titel in etagen_definitionen.items():
         if "Status" not in df_etage.columns:
             df_etage.insert(0, "Status", "Beheizt")
             
-        # KORREKTUR: Heizkreise beim Laden direkt anhand der aktuellen Fläche & 17,5m²-Regel neu berechnen
+        # Heizkreise beim Laden direkt anhand der aktuellen Fläche & 17,5m²-Regel neu berechnen
         for idx, row in df_etage.iterrows():
             fl = row.get("Fläche [m²]", 0)
             va = row.get("Verlegeabstand [cm]", 15)
             if pd.notna(fl) and fl > 0 and pd.notna(va) and va > 0:
                 rohr_gesamt = fl * (100.0 / va + 1.5)
-                # Harte Logik: 2 Kreise erst ab exakt 17.5 m²
                 k = 2 if fl >= 17.5 else 1
                 while (rohr_gesamt / k) > 125.0:
                     k += 1
