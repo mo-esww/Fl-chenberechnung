@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung
-import pytesseract  # OCR-Texterkennung direkt auf dem JPG
+import pytesseract  # OCR-Texterkennung direkt auf dem JPG/Bild
 from PIL import Image
 import io
 import re
@@ -50,7 +50,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, JPG-Konvertierung & intelligente CAD-Raumerkennung*")
+    st.markdown("*PDF-, PNG- & JPG-Upload mit automatischer OCR-Raumerfassung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -66,13 +66,19 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 PDF-Upload, JPG-Konvertierung & Raumanalyse")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App filtert Bauteilnotizen heraus und extrahiert automatisch die Räume.")
+st.subheader("📐 Grundriss-Upload (PDF, PNG, JPG) & Raumanalyse")
+st.markdown("Laden Sie Ihre Pläne hoch. Die App verarbeitet sowohl PDFs als auch direkte Bilddateien per OCR.")
 
-uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_ocr_upload")
+# Erweiterung des Uploader-Typs auf PDF, PNG, JPG
+uploaded_files = st.file_uploader(
+    "Grundrisse hochladen (PDF, PNG, JPG)", 
+    type=["pdf", "png", "jpg", "jpeg"], 
+    accept_multiple_files=True, 
+    key="multi_format_upload"
+)
 
 if uploaded_files:
-    st.markdown("### 🗂️ Konvertierte Pläne & Etagen-Zuweisung")
+    st.markdown("### 🗂️ Hochgeladene Pläne & Etagen-Zuweisung")
     file_assignments = {}
     
     if "converted_data" not in st.session_state:
@@ -81,15 +87,19 @@ if uploaded_files:
     for uploaded_file in uploaded_files:
         if uploaded_file.name not in st.session_state.converted_data:
             try:
-                pdf_bytes = uploaded_file.read()
-                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                
+                file_extension = uploaded_file.name.split('.')[-1].lower()
                 page_images = []
-                for page in doc:
-                    # Hohe Auflösung für präzise CAD-Erkennung
-                    pix = page.get_pixmap(dpi=250)
-                    img_data = pix.tobytes("jpg")
-                    image = Image.open(io.BytesIO(img_data))
+                
+                if file_extension == 'pdf':
+                    pdf_bytes = uploaded_file.read()
+                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    for page in doc:
+                        pix = page.get_pixmap(dpi=250)
+                        img_data = pix.tobytes("jpg")
+                        image = Image.open(io.BytesIO(img_data))
+                        page_images.append(image)
+                elif file_extension in ['png', 'jpg', 'jpeg']:
+                    image = Image.open(uploaded_file)
                     page_images.append(image)
                 
                 st.session_state.converted_data[uploaded_file.name] = page_images
@@ -103,7 +113,7 @@ if uploaded_files:
             
             if uploaded_file.name in st.session_state.converted_data:
                 for page_idx, img in enumerate(st.session_state.converted_data[uploaded_file.name]):
-                    st.image(img, caption=f"Seite {page_idx+1} (JPG-Ansicht)", use_container_width=True)
+                    st.image(img, caption=f"Vorschau (Seite {page_idx+1})", use_container_width=True)
 
             default_idx = 1
             fn_upper = uploaded_file.name.upper()
@@ -124,7 +134,7 @@ if uploaded_files:
     if st.button("🔄 Pläne automatisch auslesen & Tabellen befüllen"):
         temp_etagen = {k: [] for k in etagen_definitionen.keys()}
         
-        # Begriffe, die sicherstellen, dass es KEIN Raum ist (Bauteile, Notizen etc.)
+        # Sperrfilter gegen Bauteil-Notizen und technischen Textsalat
         ungueltige_begriffe = [
             "fundament", "abbruch", "dampfsperre", "bodenplatte", "pos", "wand", 
             "gk", "u:", "lung", "et", "blatt", "vorabzug", "stand", "architekt", 
@@ -137,14 +147,13 @@ if uploaded_files:
                 target_etage = file_assignments[uploaded_file.name]
                 if uploaded_file.name in st.session_state.converted_data:
                     for img in st.session_state.converted_data[uploaded_file.name]:
-                        # OCR-Auswertung auf das JPG
+                        # OCR-Auswertung auf das Bild (PDF-Seite oder hochgeladenes PNG/JPG)
                         ocr_text = pytesseract.image_to_string(img, lang='deu')
                         lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
                         
                         for i, line in enumerate(lines):
                             line_lower = line.lower()
                             
-                            # Wenn die Zeile Bauteil-Keywords enthält, komplett überspringen
                             if any(term in line_lower for term in ungueltige_begriffe):
                                 continue
                                 
@@ -158,7 +167,6 @@ if uploaded_files:
                                         val_str = match.group(1).replace(',', '.')
                                         area = float(val_str)
                                         
-                                        # Sinnvoller Filter für Raumgrößen (z. B. zwischen 2 m² und 150 m²)
                                         if 2.0 <= area <= 150.0:
                                             room_name = ""
                                             clean_line = re.sub(r'[0-9.,]+\s*m[²2]', '', line).strip()
@@ -167,7 +175,6 @@ if uploaded_files:
                                             if len(clean_line) > 2 and not clean_line.replace('.', '').isdigit():
                                                 room_name = clean_line
                                             else:
-                                                # Suche in Nachbarzeilen nach einem echten Raumnamen
                                                 for offset in [-1, 1, -2, 2]:
                                                     idx_check = i + offset
                                                     if 0 <= idx_check < len(lines):
@@ -180,12 +187,10 @@ if uploaded_files:
                                             if not room_name or room_name.replace('.', '', 1).isdigit():
                                                 room_name = "Raum"
 
-                                            # Bereinige Sonderzeichen im Raumnamen
                                             room_name = re.sub(r'[^a-zA-ZäöüÄÖÜß0-9\s]', '', room_name).strip()
                                             if not room_name:
                                                 room_name = "Raum"
 
-                                            # Verlegeabstand und Heizkreise bestimmen (max. 125m Schutz)
                                             va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
                                             
                                             rohr_gesamt = area * (100.0 / va + 1.5)
@@ -193,7 +198,6 @@ if uploaded_files:
                                             while (rohr_gesamt / kreise) > 125.0:
                                                 kreise += 1
 
-                                            # Doppelte Flächenvermeidung
                                             existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
                                             if area not in existing_areas:
                                                 temp_etagen[target_etage].append({
@@ -207,7 +211,7 @@ if uploaded_files:
                                         pass
                                         
             st.session_state.etagen_daten = temp_etagen
-            st.success("Automatische Auswertung erfolgreich abgeschlossen! Die Bauteilnotizen wurden herausgefiltert.")
+            st.success("Automatische Auswertung erfolgreich abgeschlossen!")
         except Exception as e:
             st.error(f"Fehler bei der automatischen Auswertung: {e}")
 else:
@@ -290,47 +294,4 @@ for etage_key, etage_titel in etagen_definitionen.items():
                     if kr > 0:
                         rohr_pro_kreis = raum_rohr / kr
                         if rohr_pro_kreis > 125.0:
-                            warnung_txt = f"⚠️ **{etage_key} - {room_name}**: Ein Heizkreis hat ca. {rohr_pro_kreis:.1f} m (Limit: 125 m). Bitte Heizkreise auf mindestens {np.ceil(raum_rohr / 125.0):.0f} erhöhen!"
-                            warnungen_gesamt.append(warnung_txt)
-    
-    etagen_ergebnisse[etage_key] = {
-        "flaeche": e_flaeche, 
-        "unbeheizt": e_unbeheizt, 
-        "kreise": e_kreise, 
-        "rohr": e_rohr
-    }
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric(label=f"Beheizte Fläche {etage_key}", value=f"{e_flaeche:.2f} m²")
-    with col2:
-        st.metric(label=f"Unbeheizte Fläche {etage_key}", value=f"{e_unbeheizt:.2f} m²")
-    with col3:
-        st.metric(label=f"Heizkreise {etage_key}", value=f"{e_kreise} Kreise")
-    with col4:
-        st.metric(label=f"Rohrbedarf {etage_key}", value=f"{e_rohr:.0f} m")
-        
-    st.markdown("---")
-
-if warnungen_gesamt:
-    st.error("### ⚠️ Hinweis zur max. Heizkreislänge (125m)")
-    for w in warnungen_gesamt:
-        st.warning(w)
-    st.markdown("---")
-
-# --- Summiertes Gesamtergebnis ---
-total_flaeche = sum([res["flaeche"] for res in etagen_ergebnisse.values()])
-total_unbeheizt = sum([res["unbeheizt"] for res in etagen_ergebnisse.values()])
-total_rohr = sum([res["rohr"] for res in etagen_ergebnisse.values()])
-kreise_str = " | ".join([f"{k}: {res['kreise']}" for k, res in etagen_ergebnisse.items() if res['kreise'] > 0])
-
-st.subheader("📈 Summiertes Gesamtergebnis (Gesamtgebäude)")
-col_f1, col_f2, col_f3, col_f4 = st.columns(4)
-with col_f1:
-    st.metric(label="Gesamt-Beheizte Fläche", value=f"{total_flaeche:.2f} m²")
-with col_f2:
-    st.metric(label="Gesamt-Unbeheizte Fläche", value=f"{total_unbeheizt:.2f} m²")
-with col_f3:
-    st.metric(label="Heizkreise je Verteiler", value=kreise_str if kreise_str else "0 Kreise")
-with col_f4:
-    st.metric(label="Gesamter Rohrbedarf", value=f"{total_rohr:.0f} m")
+                            warnung_txt = f"⚠️ **{etage_key} - {room_name}**: Ein Heizkreis hat ca. {rohr_pro_kreis:.1f} m (Limit: 125 m). Bitte Heizkreise auf mindestens {np
