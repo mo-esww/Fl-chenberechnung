@@ -49,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & max. Heizkreislänge (125m)*")
+    st.markdown("*PDF-Upload, Etagen-Zuordnung & automatischer Längenschutz (max. 125m)*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -166,7 +166,14 @@ if uploaded_files:
                                             room_name = room_name.replace("m²", "").strip()
 
                                             va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
-                                            kreise = max(1, round(area / 18))
+                                            
+                                            # Automatischer Längenschutz (max. 125m pro Kreis)
+                                            # Gesamtrohrbedarf für diesen Raum berechnen
+                                            rohr_gesamt = area * (100.0 / va + 1.5)
+                                            kreise = 1
+                                            while (rohr_gesamt / kreise) > 125.0:
+                                                kreise += 1
+
                                             beheizt = True
 
                                             existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
@@ -257,11 +264,10 @@ for etage_key, etage_titel in etagen_definitionen.items():
                     raum_rohr = fl * (100.0 / va + 1.5)
                     e_rohr += raum_rohr
                     
-                    # Prüfung pro Heizkreis im Raum (angenommen gleichmäßige Verteilung bei mehreren Kreisen)
                     if kr > 0:
                         rohr_pro_kreis = raum_rohr / kr
                         if rohr_pro_kreis > 125.0:
-                            warnung_txt = f"⚠️ **{etage_key} - {room_name}**: Ein Heizkreis hat ca. {rohr_pro_kreis:.1f} m (Limit: 125 m). Bitte Heizkreise erhöhen!"
+                            warnung_txt = f"⚠️ **{etage_key} - {room_name}**: Ein Heizkreis hat ca. {rohr_pro_kreis:.1f} m (Limit: 125 m). Bitte Heizkreise auf mindestens {np.ceil(raum_rohr / 125.0):.0f} erhöhen!"
                             warnungen_gesamt.append(warnung_txt)
     
     etagen_ergebnisse[etage_key] = {
@@ -283,7 +289,7 @@ for etage_key, etage_titel in etagen_definitionen.items():
         
     st.markdown("---")
 
-# Warnhinweise anzeigen, falls Kreise > 125m sind
+# Warnhinweise anzeigen, falls Kreise manuell auf einen zu hohen Wert gesetzt wurden
 if warnungen_gesamt:
     st.error("### ⚠️ Hinweis zur max. Heizkreislänge (125m)")
     for w in warnungen_gesamt:
