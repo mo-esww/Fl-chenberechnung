@@ -49,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & automatischer Längenschutz (max. 125m)*")
+    st.markdown("*PDF-Upload, Etagen-Zuordnung & vollständige Tabellenansicht ohne Scrollbalken*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -167,19 +167,15 @@ if uploaded_files:
 
                                             va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
                                             
-                                            # Automatischer Längenschutz (max. 125m pro Kreis)
-                                            # Gesamtrohrbedarf für diesen Raum berechnen
                                             rohr_gesamt = area * (100.0 / va + 1.5)
                                             kreise = 1
                                             while (rohr_gesamt / kreise) > 125.0:
                                                 kreise += 1
 
-                                            beheizt = True
-
                                             existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
                                             if area not in existing_areas:
                                                 temp_etagen[target_etage].append({
-                                                    "Beheizt": beheizt,
+                                                    "Status": "Beheizt",
                                                     "Raumbezeichnung": room_name,
                                                     "Fläche [m²]": area,
                                                     "Verlegeabstand [cm]": va,
@@ -200,7 +196,7 @@ else:
 st.markdown("---")
 
 spalten_struktur = {
-    "Beheizt": [],
+    "Status": [],
     "Raumbezeichnung": [],
     "Fläche [m²]": [],
     "Verlegeabstand [cm]": [],
@@ -219,19 +215,26 @@ for etage_key, etage_titel in etagen_definitionen.items():
         df_etage = pd.DataFrame(columns=list(spalten_struktur.keys()))
     else:
         df_etage = pd.DataFrame(data=current_data)
-        if "Beheizt" not in df_etage.columns:
-            df_etage.insert(0, "Beheizt", True)
+        if "Status" not in df_etage.columns:
+            df_etage.insert(0, "Status", "Beheizt")
+    
+    # Dynamische Höhenberechnung für den Editor, damit keine Scrollbalken entstehen
+    num_rows = len(df_etage) if not df_etage.empty else 1
+    editor_height = int((num_rows + 2) * 38) + 40
     
     edited_df = st.data_editor(
         df_etage, 
         num_rows="dynamic", 
         use_container_width=True, 
+        height=editor_height,
         key=f"editor_{etage_key}",
         column_config={
-            "Beheizt": st.column_config.CheckboxColumn(
-                "Beheizt",
-                help="Häkchen entfernen, wenn der Raum unbeheizt ist.",
-                default=True,
+            "Status": st.column_config.SelectboxColumn(
+                "Status",
+                help="Wählen Sie aus, ob der Raum beheizt oder unbeheizt ist.",
+                options=["Beheizt", "Unbeheizt"],
+                required=True,
+                default="Beheizt"
             )
         },
         placeholder="Klicken Sie oben auf den Auslesen-Button oder fügen Sie Räume hinzu..."
@@ -239,15 +242,14 @@ for etage_key, etage_titel in etagen_definitionen.items():
     
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
     
-    # Berechnungen und Prüfung der max. Heizkreislänge (125m)
     e_flaeche = 0
     e_unbeheizt = 0
     e_kreise = 0
     e_rohr = 0
     
-    if not edited_df.empty and "Beheizt" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
-        df_active = edited_df[edited_df["Beheizt"] == True]
-        df_inactive = edited_df[edited_df["Beheizt"] == False]
+    if not edited_df.empty and "Status" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
+        df_active = edited_df[edited_df["Status"] == "Beheizt"]
+        df_inactive = edited_df[edited_df["Status"] == "Unbeheizt"]
         
         e_flaeche = df_active["Fläche [m²]"].sum() if not df_active.empty else 0
         e_unbeheizt = df_inactive["Fläche [m²]"].sum() if not df_inactive.empty else 0
@@ -289,7 +291,6 @@ for etage_key, etage_titel in etagen_definitionen.items():
         
     st.markdown("---")
 
-# Warnhinweise anzeigen, falls Kreise manuell auf einen zu hohen Wert gesetzt wurden
 if warnungen_gesamt:
     st.error("### ⚠️ Hinweis zur max. Heizkreislänge (125m)")
     for w in warnungen_gesamt:
