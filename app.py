@@ -54,7 +54,7 @@ st.markdown("---")
 # FUSSBODENHEIZUNG & MEHR-ETAGEN-PLANUNG
 # ==========================================
 st.subheader("📐 Raum- und Etagen-Management (UG, EG, OG, DG)")
-st.markdown("Da CAD-Pläne oft komplexe Text-Ebenen nutzen, verwalten und bearbeiten Sie Ihre Räume hier direkt verlustfrei und übersichtlich in den etagenbezogenen Tabellen.")
+st.markdown("Tragen Sie Ihre Räume, Flächen und Verlegeabstände direkt in die etagenbezogenen Tabellen ein.")
 
 etagen_definitionen = {
     "UG": "Untergeschoss / Keller",
@@ -63,26 +63,25 @@ etagen_definitionen = {
     "DG": "Dachgeschoss"
 }
 
-# Initialisierung der Tabellen im Session State (falls noch nicht vorhanden)
+# Initialisierung der Tabellen im Session State mit leeren DataFrames
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {
         "UG": [],
-        "EG": [
-            {"Raumbezeichnung": "Essen / Wohnen", "Fläche [m²]": 55.04, "Verlegeabstand [cm]": 15, "Heizkreise": 3},
-            {"Raumbezeichnung": "Küche", "Fläche [m²]": 17.81, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-            {"Raumbezeichnung": "Diele", "Fläche [m²]": 13.50, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-            {"Raumbezeichnung": "Duschbad", "Fläche [m²]": 5.70, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
-        ],
-        "OG": [
-            {"Raumbezeichnung": "Schlafen", "Fläche [m²]": 16.08, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-            {"Raumbezeichnung": "Kind 1", "Fläche [m²]": 17.91, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-            {"Raumbezeichnung": "Bad", "Fläche [m²]": 9.66, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
-        ],
+        "EG": [],
+        "OG": [],
         "DG": []
     }
 
-# Optionaler Upload-Hinweis (damit der Nutzer weiß, dass er Dateien ablegen kann)
+# Optionaler Upload-Bereich (optional zur Dokumentation)
 st.file_uploader("Pläne zur Dokumentation hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_dummy")
+
+# Definieren der Spaltenstruktur für leere Tabellen
+spalten_struktur = {
+    "Raumbezeichnung": [],
+    "Fläche [m²]": [],
+    "Verlegeabstand [cm]": [],
+    "Heizkreise": []
+}
 
 # --- Dynamische Anzeige und Editierung für jede Etage ---
 etagen_ergebnisse = {}
@@ -90,7 +89,12 @@ etagen_ergebnisse = {}
 for etage_key, etage_titel in etagen_definitionen.items():
     st.markdown(f"### 🏢 {etage_titel} ({etage_key})")
     
-    df_etage = pd.DataFrame(st.session_state.etagen_daten[etage_key])
+    # Wenn die Liste für diese Etage leer ist, übergeben wir eine strukturierte leere Tabelle
+    current_data = st.session_state.etagen_daten[etage_key]
+    if not current_data:
+        df_etage = pd.DataFrame(columns=list(spalten_struktur.keys()))
+    else:
+        df_etage = pd.DataFrame(current_data)
     
     # Interaktiver Editor für den Anwender
     edited_df = st.data_editor(
@@ -100,12 +104,21 @@ for etage_key, etage_titel in etagen_definitionen.items():
         key=f"editor_{etage_key}",
         placeholder="Klicken Sie hier, um Räume hinzuzufügen..."
     )
+    
+    # Aktualisieren des Session States
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
     
-    # Berechnungen pro Etage
-    e_flaeche = edited_df["Fläche [m²]"].sum() if not edited_df.empty else 0
-    e_kreise = int(edited_df["Heizkreise"].sum()) if not edited_df.empty else 0
-    e_rohr = sum([fl * (100.0 / va + 1.5) for _, row in edited_df.iterrows() for va, fl in [(row["Verlegeabstand [cm]"], row["Fläche [m²]"])] if va > 0]) if not edited_df.empty else 0
+    # Berechnungen pro Etage (nur wenn Daten vorhanden sind)
+    e_flaeche = edited_df["Fläche [m²]"].sum() if not edited_df.empty and "Fläche [m²]" in edited_df.columns else 0
+    e_kreise = int(edited_df["Heizkreise"].sum()) if not edited_df.empty and "Heizkreise" in edited_df.columns else 0
+    
+    e_rohr = 0
+    if not edited_df.empty and "Verlegeabstand [cm]" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
+        for _, row in edited_df.iterrows():
+            va = row.get("Verlegeabstand [cm]", 0)
+            fl = row.get("Fläche [m²]", 0)
+            if pd.notna(va) and pd.notna(fl) and va > 0:
+                e_rohr += fl * (100.0 / va + 1.5)
     
     etagen_ergebnisse[etage_key] = {"flaeche": e_flaeche, "kreise": e_kreise, "rohr": e_rohr}
     
