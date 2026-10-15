@@ -47,7 +47,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer nach Etagen")
-    st.markdown("*Automatisierte Grundriss-Auswertung (Mehrere PDFs möglich) und Rohrnetz-Dimensionierung*")
+    st.markdown("*Automatisierte Grundriss-Auswertung (Multi-Upload) und Rohrnetz-Dimensionierung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -56,10 +56,24 @@ st.markdown("---")
 # FUSSBODENHEIZUNG & ETAGEN-PLANUNG
 # ==========================================
 st.subheader("📐 Automatische Grundriss-Auswertung (Multi-Upload)")
-st.markdown("Laden Sie hier eine oder **mehrere** Plan-PDFs hoch. Die App startet die Auswertung und Berechnung bei jeder Änderung automatisch neu.")
+st.markdown("Laden Sie hier eine oder **mehrere** Plan-PDFs hoch.")
 
-# accept_multiple_files=True ermöglicht den Upload mehrerer Dateien
+# Multi-Upload Feld
 uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_etagen")
+
+# Prüfen, ob sich die hochgeladenen Dateien im Vergleich zum letzten Mal geändert haben
+uploaded_files_names = [f.name for f in uploaded_files] if uploaded_files else []
+if "last_uploaded_files" not in st.session_state:
+    st.session_state.last_uploaded_files = []
+
+# Wenn neue Dateien hochgeladen oder entfernt wurden, Daten zurücksetzen
+if uploaded_files_names != st.session_state.last_uploaded_files:
+    st.session_state.last_uploaded_files = uploaded_files_names
+    # Alte Session-Daten löschen, damit frisch eingelesen wird
+    if "df_eg" in st.session_state:
+        del st.session_state.df_eg
+    if "df_dg" in st.session_state:
+        del st.session_state.df_dg
 
 eg_rooms = []
 dg_rooms = []
@@ -100,12 +114,12 @@ if uploaded_files:
                             except ValueError:
                                 pass
         if eg_rooms or dg_rooms:
-            st.success(f"Erfolgreich {len(uploaded_files)} Datei(en) eingelesen. Berechnung wurde neu gestartet!")
+            st.success(f"Erfolgreich {len(uploaded_files)} Datei(en) eingelesen und Tabellen aktualisiert!")
     except Exception as e:
         st.error(f"Fehler beim Lesen der PDFs: {e}")
 
-# Fallback, falls keine Dateien hochgeladen wurden
-if not eg_rooms and not dg_rooms:
+# Fallback oder Initialisierung aus den frisch gelesenen Räumen
+if not eg_rooms and not dg_rooms and not uploaded_files:
     eg_rooms = [
         {"Raumbezeichnung": "Wohnen / Essen / Kochen", "Fläche [m²]": 83.29, "Verlegeabstand [cm]": 15, "Heizkreise": 5},
         {"Raumbezeichnung": "Diele", "Fläche [m²]": 12.11, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
@@ -125,8 +139,11 @@ if not eg_rooms and not dg_rooms:
 
 # --- Erdgeschoss ---
 st.markdown("### 🏠 Erdgeschoss (EG)")
-df_eg = pd.DataFrame(eg_rooms)
-edited_eg = st.data_editor(df_eg, num_rows="dynamic", use_container_width=True, key="editor_eg")
+if "df_eg" not in st.session_state:
+    st.session_state.df_eg = pd.DataFrame(eg_rooms)
+
+edited_eg = st.data_editor(st.session_state.df_eg, num_rows="dynamic", use_container_width=True, key="editor_eg")
+st.session_state.df_eg = edited_eg
 
 eg_flaeche = edited_eg["Fläche [m²]"].sum() if not edited_eg.empty else 0
 eg_kreise = int(edited_eg["Heizkreise"].sum()) if not edited_eg.empty else 0
@@ -144,8 +161,11 @@ st.markdown("---")
 
 # --- Dachgeschoss ---
 st.markdown("### 🏠 Dachgeschoss (DG)")
-df_dg = pd.DataFrame(dg_rooms)
-edited_dg = st.data_editor(df_dg, num_rows="dynamic", use_container_width=True, key="editor_dg")
+if "df_dg" not in st.session_state:
+    st.session_state.df_dg = pd.DataFrame(dg_rooms)
+
+edited_dg = st.data_editor(st.session_state.df_dg, num_rows="dynamic", use_container_width=True, key="editor_dg")
+st.session_state.df_dg = edited_dg
 
 dg_flaeche = edited_dg["Fläche [m²]"].sum() if not edited_dg.empty else 0
 dg_kreise = int(edited_dg["Heizkreise"].sum()) if not edited_dg.empty else 0
