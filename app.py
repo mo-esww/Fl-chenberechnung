@@ -45,13 +45,13 @@ with col_logo:
 
 with col_title:
     st.title("Wärmepumpen-Konfigurator & Fußbodenheizungs-Planer")
-    st.markdown("*Interaktive Auslegung, Baureihen-Wahl und automatisierte Plan-Auswertung*")
+    st.markdown("*Interaktive Auslegung, Baureihen-Wahl und Begrenzung des Bivalenzpunkts auf max. -3°C*")
     st.markdown("*Ersetzt keine Heizlastberechnung nach Norm 12831*")
 
 st.markdown("---")
 
 # --- Tabs für die Navigation ---
-tab_wp, tab_fbh = st.tabs(["🔥 Wärmepumpen & Bivalenzpunkt", "📐 Fußbodenheizung per Plan-Upload"])
+tab_wp, tab_fbh = st.tabs(["🔥 Wärmepumpen & Bivalenzpunkt", "📐 Fußbodenheizung & Raumplanung"])
 
 # ==========================================
 # TAB 1: WÄRMEPUMPEN & BIVALENZPUNKT
@@ -237,47 +237,52 @@ with tab_wp:
 
 
 # ==========================================
-# TAB 2: FUSSBODENHEIZUNG PER PLAN-UPLOAD
+# TAB 2: FUSSBODENHEIZUNG & RAUMPLANUNG
 # ==========================================
 with tab_fbh:
-    st.subheader("📐 Automatische Raum- und Flächenanalyse per Grundriss-Upload")
-    st.markdown("Laden Sie hier Ihren Grundriss-Plan (als PDF, PNG oder JPG) hoch. Die integrierte Analyse liest die Raumbezeichnungen und Einzelflächen aus.")
+    st.subheader("📐 Fußbodenheizungs-Auslegung nach Raumliste")
+    st.markdown("Tragen Sie hier Ihre echten Raumbezeichnungen, die zugehörigen Flächen aus dem Plan sowie den gewünschten Verlegeabstand ein. Die Gesamtfläche, Heizkreise und der Rohrbedarf werden automatisch berechnet.")
 
-    uploaded_file = st.file_uploader("Grundriss hochladen (PDF, JPG, PNG)", type=["pdf", "png", "jpg", "jpeg"])
+    # Initial-Daten als leere / editierbare Tabelle
+    if "df_raeume" not in st.session_state:
+        st.session_state.df_raeume = pd.DataFrame([
+            {"Raumbezeichnung": "Wohnen / Essen", "Fläche [m²]": 35.0, "Verlegeabstand [cm]": 10, "Heizkreise": 2},
+            {"Raumbezeichnung": "Küche", "Fläche [m²]": 12.0, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
+            {"Raumbezeichnung": "Bad", "Fläche [m²]": 8.0, "Verlegeabstand [cm]": 5, "Heizkreise": 1},
+            {"Raumbezeichnung": "Schlafen", "Fläche [m²]": 16.0, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "Flur", "Fläche [m²]": 10.0, "Verlegeabstand [cm]": 15, "Heizkreise": 1}
+        ])
 
-    if uploaded_file is not None:
-        st.success(f"Plan '{uploaded_file.name}' erfolgreich hochgeladen und analysiert!")
+    # Interaktiver Editor für den Anwender
+    edited_df = st.data_editor(
+        st.session_state.df_raeume, 
+        num_rows="dynamic",
+        use_container_width=True
+    )
+    st.session_state.df_raeume = edited_df
+
+    # Berechnungen basierend auf den aktuellen Tabelleneinträgen
+    if not edited_df.empty:
+        gesamt_flaeche = edited_df["Fläche [m²]"].sum()
+        gesamt_kreise = edited_df["Heizkreise"].sum()
         
-        # Simulierte, aber realistische automatische Extraktion aus dem Plan
-        # In einer voll ausgebauten SaaS-Lösung greift hier z.B. ein OCR- oder Vision-Modell ein.
-        raw_raumprufung = [
-            {"Raumbezeichnung": "Wohnen / Essen", "Fläche [m²]": 42.5, "Verlegeabstand [cm]": 10, "Empfohlene Kreise": 3},
-            {"Raumbezeichnung": "Küche", "Fläche [m²]": 14.0, "Verlegeabstand [cm]": 10, "Empfohlene Kreise": 1},
-            {"Raumbezeichnung": "Flur / Diele", "Fläche [m²]": 12.5, "Verlegeabstand [cm]": 15, "Empfohlene Kreise": 1},
-            {"Raumbezeichnung": "Bad (EG)", "Fläche [m²]": 8.0, "Verlegeabstand [cm]": 5, "Empfohlene Kreise": 1},
-            {"Raumbezeichnung": "Schlafen", "Fläche [m²]": 18.0, "Verlegeabstand [cm]": 15, "Empfohlene Kreise": 1},
-            {"Raumbezeichnung": "Kind 1", "Fläche [m²]": 15.0, "Verlegeabstand [cm]": 10, "Empfohlene Kreise": 1},
-            {"Raumbezeichnung": "Kind 2", "Fläche [m²]": 15.0, "Verlegeabstand [cm]": 10, "Empfohlene Kreise": 1},
-            {"Raumbezeichnung": "Technik / HWR", "Fläche [m²]": 7.5, "Verlegeabstand [cm]": 20, "Empfohlene Kreise": 1}
-        ]
-        
-        df_raeume = pd.DataFrame(raw_raumprufung)
-        gesamt_flaeche = df_raeume["Fläche [m²]"].sum()
-        gesamt_kreise = df_raeume["Empfohlene Kreise"].sum()
-        gesamtlaufzeit_rohr = gesamt_flaeche * 6.5 # ca. 6.5m Rohr pro m² bei durchschnittlichem VA
+        # Rohrbedarf-Schätzung abhängig vom Verlegeabstand (VA)
+        # ca. 1000 / VA [cm] ergibt Meter Rohr pro m² (z.B. VA 10 = ~10m/m², VA 15 = ~7m/m², inkl. Anbindung)
+        rohrbedarf_gesamt = 0
+        for _, row in edited_df.iterrows():
+            va = row["Verlegeabstand [cm]"]
+            fl = row["Fläche [m²]"]
+            if va > 0:
+                faktor = 100.0 / va + 1.5 # Faustformel inkl. Randzone & Anbindung
+                rohrbedarf_gesamt += fl * faktor
 
         st.markdown("---")
-        st.subheader("📋 Ausgewertete Räume & Flächen")
-        st.dataframe(df_raeume, use_container_width=True)
-
-        col_fbh1, col_fbh2, col_fbh3 = st.columns(3)
-        with col_fbh1:
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
             st.metric(label="Gesamt-Beheizte Fläche", value=f"{gesamt_flaeche:.1f} m²")
-        with col_fbh2:
-            st.metric(label="Anzahl Heizkreise gesamt", value=f"{gesamt_kreise} Kreise")
-        with col_fbh3:
-            st.metric(label="Geschätzter Rohrbedarf (16x2)", value=f"{gesamtlaufzeit_rohr:.0f} Meter")
+        with col_f2:
+            st.metric(label="Anzahl Heizkreise gesamt", value=f"{int(gesamt_kreise)} Kreise")
+        with col_f3:
+            st.metric(label="Geschätzter Rohrbedarf", value=f"{rohrbedarf_gesamt:.0f} Meter")
             
-        st.info("💡 **Tipp:** Sie können die erkannten Werte direkt für die hydraulische Einbindung und Anbindung an den Pufferspeicher in Tab 1 übernehmen.")
-    else:
-        st.info("Bitte laden Sie oben einen Grundriss hoch, um die automatische Raumerkennung und Flächenberechnung zu starten.")
+        st.success("✅ Raumliste erfolgreich ausgewertet und berechnet!")
