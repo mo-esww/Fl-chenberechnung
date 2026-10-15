@@ -49,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & vollständige Tabellenansicht ohne Scrollbalken*")
+    st.markdown("*PDF-Upload, Etagen-Zuordnung & Dropdown-Statuswahl für Räume*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -218,7 +218,7 @@ for etage_key, etage_titel in etagen_definitionen.items():
         if "Status" not in df_etage.columns:
             df_etage.insert(0, "Status", "Beheizt")
     
-    # Dynamische Höhenberechnung für den Editor, damit keine Scrollbalken entstehen
+    # Dynamische Höhe ohne Scrollbalken
     num_rows = len(df_etage) if not df_etage.empty else 1
     editor_height = int((num_rows + 2) * 38) + 40
     
