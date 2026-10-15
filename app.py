@@ -176,11 +176,7 @@ if uploaded_files:
                                             rohr_gesamt = area * (100.0 / va + 1.5)
                                             
                                             # EXAKTE SCHWELLENWERT-PRÜFUNG: Erst ab 17.5 m² zwei Kreise
-                                            if area >= 17.5:
-                                                kreise = 2
-                                            else:
-                                                kreise = 1
-                                                
+                                            kreise = 2 if area >= 17.5 else 1
                                             while (rohr_gesamt / kreise) > 125.0:
                                                 kreise += 1
 
@@ -229,6 +225,18 @@ for etage_key, etage_titel in etagen_definitionen.items():
         df_etage = pd.DataFrame(data=current_data)
         if "Status" not in df_etage.columns:
             df_etage.insert(0, "Status", "Beheizt")
+            
+        # KORREKTUR: Heizkreise beim Laden direkt anhand der aktuellen Fläche & 17,5m²-Regel neu berechnen
+        for idx, row in df_etage.iterrows():
+            fl = row.get("Fläche [m²]", 0)
+            va = row.get("Verlegeabstand [cm]", 15)
+            if pd.notna(fl) and fl > 0 and pd.notna(va) and va > 0:
+                rohr_gesamt = fl * (100.0 / va + 1.5)
+                # Harte Logik: 2 Kreise erst ab exakt 17.5 m²
+                k = 2 if fl >= 17.5 else 1
+                while (rohr_gesamt / k) > 125.0:
+                    k += 1
+                df_etage.at[idx, "Heizkreise"] = k
     
     # Dynamische Höhe ohne Scrollbalken
     num_rows = len(df_etage) if not df_etage.empty else 1
