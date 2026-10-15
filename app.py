@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung
-import pytesseract  # OCR-Texterkennung auf den JPGs
+import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung & saubere Textextraktion
 from PIL import Image
 import io
 import re
@@ -50,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-zu-JPG Konvertierung & automatische OCR-Raumerfassung*")
+    st.markdown("*PDF-zu-JPG Konvertierung & smarte CAD-Raumerfassung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -66,43 +65,50 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 PDF-Upload, JPG-Konvertierung & OCR-Auswertung")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App wandelt diese in JPGs um und liest die Räume vollautomatisch über Texterkennung aus.")
+st.subheader("📐 PDF-Upload, JPG-Konvertierung & Raumanalyse")
+st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App konvertiert sie zu JPGs für die Vorschau und liest die Räume aus.")
 
-uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_ocr_upload")
+uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_fitz_upload")
 
 if uploaded_files:
     st.markdown("### 🗂️ Konvertierte Pläne & Etagen-Zuweisung")
     file_assignments = {}
     
-    if "converted_jpgs" not in st.session_state:
-        st.session_state.converted_jpgs = {}
+    if "converted_data" not in st.session_state:
+        st.session_state.converted_data = {}
 
     for uploaded_file in uploaded_files:
-        if uploaded_file.name not in st.session_state.converted_jpgs:
+        if uploaded_file.name not in st.session_state.converted_data:
             try:
                 pdf_bytes = uploaded_file.read()
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 
                 page_images = []
+                page_texts = []
                 for page in doc:
-                    # Höhere DPI (200) für optimale OCR-Erkennung
-                    pix = page.get_pixmap(dpi=200)
+                    # JPG-Vorschau erzeugen
+                    pix = page.get_pixmap(dpi=150)
                     img_data = pix.tobytes("jpg")
                     image = Image.open(io.BytesIO(img_data))
                     page_images.append(image)
+                    
+                    # Text aus der PDF-Seite extrahieren
+                    page_texts.append(page.get_text())
                 
-                st.session_state.converted_jpgs[uploaded_file.name] = page_images
+                st.session_state.converted_data[uploaded_file.name] = {
+                    "images": page_images,
+                    "texts": page_texts
+                }
             except Exception as e:
-                st.error(f"Fehler bei der Konvertierung von {uploaded_file.name}: {e}")
+                st.error(f"Fehler bei der Verarbeitung von {uploaded_file.name}: {e}")
 
     cols = st.columns(len(uploaded_files))
     for idx, uploaded_file in enumerate(uploaded_files):
         with cols[idx % len(cols)]:
             st.markdown(f"**📄 Datei:** `{uploaded_file.name}`")
             
-            if uploaded_file.name in st.session_state.converted_jpgs:
-                for page_idx, img in enumerate(st.session_state.converted_jpgs[uploaded_file.name]):
+            if uploaded_file.name in st.session_state.converted_data:
+                for page_idx, img in enumerate(st.session_state.converted_data[uploaded_file.name]["images"]):
                     st.image(img, caption=f"Seite {page_idx+1} (JPG-Ansicht)", use_container_width=True)
 
             default_idx = 1
@@ -121,20 +127,17 @@ if uploaded_files:
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    if st.button("🔄 Pläne per OCR auslesen & Tabellen befüllen"):
+    if st.button("🔄 Pläne auslesen & Tabellen befüllen"):
         temp_etagen = {k: [] for k in etagen_definitionen.keys()}
         
         try:
             for uploaded_file in uploaded_files:
                 target_etage = file_assignments[uploaded_file.name]
-                if uploaded_file.name in st.session_state.converted_jpgs:
-                    for img in st.session_state.converted_jpgs[uploaded_file.name]:
-                        # OCR auf das konvertierte JPG anwenden (Deutsch + Englisch)
-                        ocr_text = pytesseract.image_to_string(img, lang='deu+eng')
-                        lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
+                if uploaded_file.name in st.session_state.converted_data:
+                    for text in st.session_state.converted_data[uploaded_file.name]["texts"]:
+                        lines = [line.strip() for line in text.split('\n') if line.strip()]
                         
                         for i, line in enumerate(lines):
-                            # Suche nach Flächenangaben im JPG-Text (z.B. "21.05 m²")
                             if "m²" in line or "m 2" in line or "F:" in line:
                                 match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
                                 if not match and "F:" in line:
@@ -180,13 +183,13 @@ if uploaded_files:
                                         pass
                                         
             st.session_state.etagen_daten = temp_etagen
-            st.success("OCR-Auswertung erfolgreich abgeschlossen! Die Tabellen wurden befüllt.")
+            st.success("Auswertung erfolgreich abgeschlossen! Die Tabellen wurden befüllt.")
         except Exception as e:
-            st.error(f"Fehler bei der OCR-Auswertung: {e}")
+            st.error(f"Fehler bei der Auswertung: {e}")
 else:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
-    if "converted_jpgs" in st.session_state:
-        del st.session_state.converted_jpgs
+    if "converted_data" in st.session_state:
+        del st.session_state.converted_data
 
 st.markdown("---")
 
@@ -207,14 +210,14 @@ for etage_key, etage_titel in etagen_definitionen.items():
     if not current_data:
         df_etage = pd.DataFrame(columns=list(spalten_struktur.keys()))
     else:
-        df_etage = pd.DataFrame(current_data)
+        df_etage = pd.DataFrame(data=current_data)
     
     edited_df = st.data_editor(
         df_etage, 
         num_rows="dynamic", 
         use_container_width=True, 
         key=f"editor_{etage_key}",
-        placeholder="Klicken Sie auf den Button oben, um das JPG per OCR auszulesen, oder fügen Sie manuell Räume hinzu..."
+        placeholder="Klicken Sie oben auf den Auslesen-Button oder fügen Sie Räume hinzu..."
     )
     
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
