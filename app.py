@@ -48,7 +48,7 @@ with col_logo:
 with col_title:
     st.title("Wärmepumpen-Konfigurator & Fußbodenheizungs-Planer")
     st.markdown("*Interaktive Auslegung, Baureihen-Wahl und Begrenzung des Bivalenzpunkts auf max. -3°C*")
-    st.markdown("*Ersetzt keine Heizlastberechnung nach Norm 12831*")
+    st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
 
@@ -177,3 +177,148 @@ with tab_wp:
 
         ergebnisse_liste.append({
             "Modell": wp_name,
+            "Bivalenzpunkt [°C]": round(biv_punkt, 1),
+            "Leistung bei Biv. [kW]": round(leistung_biv, 2),
+            "Leistungen": wp_leistungen,
+            "MaxLeistungBei22C": wp_leistungen[-1]
+        })
+
+    df_ergebnisse = pd.DataFrame(ergebnisse_liste)
+    df_geprueft = df_ergebnisse.sort_values(by="MaxLeistungBei22C", ascending=True)
+    passende_wps = df_geprueft[df_geprueft["Bivalenzpunkt [°C]"] <= -3.0]
+
+    if not passende_wps.empty:
+        empfohlene_wp = passende_wps.iloc[0]["Modell"]
+        biv_empfehlung = passende_wps.iloc[0]["Bivalenzpunkt [°C]"]
+        aktive_leistungen = passende_wps.iloc[0]["Leistungen"]
+        warnung_aktiv = False
+    else:
+        empfohlene_wp = df_ergebnisse.sort_values(by="MaxLeistungBei22C", ascending=False).iloc[0]["Modell"]
+        row_empf = df_ergebnisse[df_ergebnisse["Modell"] == empfohlene_wp].iloc[0]
+        biv_empfehlung = row_empf["Bivalenzpunkt [°C]"]
+        aktive_leistungen = row_empf["Leistungen"]
+        warnung_aktiv = True
+
+    puffer_tabelle = {"AHPA 412": 300, "AHPA 413": 500, "AHPA 618": 500, "AHPA 722": 800, "AHPA 1030": 1000, "AHPC 27": 300, "AHPC 412": 300}
+    puffer_groesse = puffer_tabelle.get(empfohlene_wp, 300)
+
+    if frischwasser == "ja":
+        boiler_groesse = 500
+    else:
+        boiler_tabelle = {1: 300, 2: 300, 3: 300, 4: 400, 5: 400, 6: 500, 7: 500}
+        boiler_groesse = boiler_tabelle.get(personen, 400)
+
+    mag_tabelle = {300: 35, 500: 50, 800: 80, 1000: 80}
+    mag_groesse = mag_tabelle.get(puffer_groesse, 35)
+
+    st.markdown("---")
+    st.subheader("📊 Auswertung, Bivalenzpunkt & Komponentenauswahl")
+
+    if warnung_aktiv:
+        st.warning(f"⚠️ **Hinweis:** Keines der Modelle aus der Baureihe **{baureihe_wahl}** erreicht bei dieser Heizlast einen Bivalenzpunkt von $\le -3\,^\circ\text{C}$. Das stärkste verfügbare Modell wurde gewählt (Bivalenzpunkt liegt bei {biv_empfehlung} °C).")
+
+    res_col1, res_col2, res_col3 = st.columns(3)
+    with res_col1:
+        st.metric(label="Gesamt-Heizlast (inkl. WW)", value=f"{gesamt_last_kw:.1f} kW")
+        st.metric(label=f"Empfohlene WP ({baureihe_wahl})", value=empfohlene_wp)
+    with res_col2:
+        st.metric(label="Ermittelter Bivalenzpunkt", value=f"{biv_empfehlung} °C")
+        st.metric(label="Ausdehnungsgefäß (MAG)", value=f"{mag_groesse} Liter")
+    with res_col3:
+        st.metric(label="Pufferspeicher", value=f"{puffer_groesse} Liter")
+        st.metric(label="Trinkwasser-Boiler / FriWa", value=f"{boiler_groesse} Liter")
+
+    st.markdown("---")
+    st.subheader("📈 Kennlinien-Vergleich (Heizlast vs. Wärmepumpen-Leistung)")
+    chart_data = pd.DataFrame({
+        "Quellentemperatur (°C)": x_vals,
+        "Gebäude-Heizlast (kW)": [gesamt_last_kw * (t_grenz - x) / (t_grenz - t_norm) for x in x_vals],
+        f"WP Maximalleistung {empfohlene_wp} ({systemtemperatur}°C)": aktive_leistungen
+    }).set_index("Quellentemperatur (°C)")
+    st.line_chart(chart_data)
+
+
+# ==========================================
+# TAB 2: FUSSBODENHEIZUNG & ETAGEN-PLANUNG
+# ==========================================
+with tab_fbh:
+    st.subheader("📐 Automatische Grundriss-Auswertung nach Etagen (EG & DG)")
+    st.markdown("Laden Sie Ihren Plan als PDF hoch. Die App trennt die Räume automatisch in Erdgeschoss (EG) und Dachgeschoss (DG).")
+
+    uploaded_file = st.file_uploader("Grundriss hochladen (PDF)", type=["pdf"], key="pdf_upload_etagen")
+
+    eg_rooms = []
+    dg_rooms = []
+
+    if uploaded_file is not None:
+        try:
+            reader = pypdf.PdfReader(uploaded_file)
+            for page in reader.pages:
+                text = page.extract_text()
+                lines = text.split('\n')
+                is_dg = False
+                for i, line in enumerate(lines):
+                    if "Kind 1" in line or "Dachschräge" in line:
+                        is_dg = True
+
+                    if "F:" in line and "m" in line:
+                        match = re.search(r"F:\s*([0-9.,]+)", line)
+                        if match:
+                            area_str = match.group(1).replace(',', '.')
+                            try:
+                                area = float(area_str)
+                                room_name = lines[i-1].strip() if i > 0 else "Raum"
+                                va = 10 if "Bad" in room_name else 15
+                                kreise = max(1, round(area / 18))
+                                
+                                room_data = {
+                                    "Raumbezeichnung": room_name,
+                                    "Fläche [m²]": area,
+                                    "Verlegeabstand [cm]": va,
+                                    "Heizkreise": kreise
+                                }
+                                
+                                if room_name in ["Kind 1", "Kind 2", "Schlafen", "Büro"] or (is_dg and room_name in ["Flur", "Bad"]):
+                                    dg_rooms.append(room_data)
+                                else:
+                                    eg_rooms.append(room_data)
+                            except ValueError:
+                                pass
+            if eg_rooms or dg_rooms:
+                st.success("Plan erfolgreich nach Etagen (EG & DG) ausgelesen!")
+        except Exception as e:
+            st.error(f"Fehler beim Lesen der PDF: {e}")
+
+    if not eg_rooms and not dg_rooms:
+        eg_rooms = [
+            {"Raumbezeichnung": "Wohnen / Essen / Kochen", "Fläche [m²]": 83.29, "Verlegeabstand [cm]": 15, "Heizkreise": 5},
+            {"Raumbezeichnung": "Diele", "Fläche [m²]": 12.11, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "HWR", "Fläche [m²]": 7.25, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "Technik", "Fläche [m²]": 6.75, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "WC", "Fläche [m²]": 2.55, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
+            {"Raumbezeichnung": "Lager", "Fläche [m²]": 5.09, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+        ]
+        dg_rooms = [
+            {"Raumbezeichnung": "Kind 1", "Fläche [m²]": 17.91, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "Kind 2", "Fläche [m²]": 17.90, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "Schlafen", "Fläche [m²]": 16.08, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "Büro", "Fläche [m²]": 30.43, "Verlegeabstand [cm]": 15, "Heizkreise": 2},
+            {"Raumbezeichnung": "Bad", "Fläche [m²]": 9.66, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
+            {"Raumbezeichnung": "Flur", "Fläche [m²]": 5.89, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+        ]
+
+    st.markdown("### 🏠 Erdgeschoss (EG)")
+    df_eg = pd.DataFrame(eg_rooms)
+    edited_eg = st.data_editor(df_eg, num_rows="dynamic", use_container_width=True, key="editor_eg")
+
+    st.markdown("### 🏠 Dachgeschoss (DG)")
+    df_dg = pd.DataFrame(dg_rooms)
+    edited_dg = st.data_editor(df_dg, num_rows="dynamic", use_container_width=True, key="editor_dg")
+
+    gesamt_flaeche = (edited_eg["Fläche [m²]"].sum() if not edited_eg.empty else 0) + (edited_dg["Fläche [m²]"].sum() if not edited_dg.empty else 0)
+    gesamt_kreise = (int(edited_eg["Heizkreise"].sum()) if not edited_eg.empty else 0) + (int(edited_dg["Heizkreise"].sum()) if not edited_dg.empty else 0)
+
+    rohrbedarf_gesamt = 0
+    for df_etage in [edited_eg, edited_dg]:
+        if not df_etage.empty:
+            for _, row in df_etage
