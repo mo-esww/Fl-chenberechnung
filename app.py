@@ -49,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & optimierte Heizkreis-Aufteilung ab 17,5 m²*")
+    st.markdown("*PDF-Upload, Etagen-Zuordnung & präzise Heizkreis-Aufteilung ab 17,5 m²*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -174,8 +174,13 @@ if uploaded_files:
                                             va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
                                             
                                             rohr_gesamt = area * (100.0 / va + 1.5)
-                                            # Ab 17,5 m² exakt 2 Kreise, darunter 1 Kreis (sofern 125m-Limit nicht überschritten)
-                                            kreise = 2 if area >= 17.5 else 1
+                                            
+                                            # EXAKTE SCHWELLENWERT-PRÜFUNG: Erst ab 17.5 m² zwei Kreise
+                                            if area >= 17.5:
+                                                kreise = 2
+                                            else:
+                                                kreise = 1
+                                                
                                             while (rohr_gesamt / kreise) > 125.0:
                                                 kreise += 1
 
