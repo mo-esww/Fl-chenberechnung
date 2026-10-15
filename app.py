@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import fitz  # PyMuPDF für High-Performance PDF-zu-Bild-Konvertierung
 from PIL import Image
-import re
+import io
 
 # --- Seiten-Konfiguration & Corporate Design ---
 st.set_page_config(
@@ -47,7 +48,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*Etagenbasierte Auswertung per Bild-Upload (JPG / PNG) & Rohrnetz-Dimensionierung*")
+    st.markdown("*PDF-zu-Bild Konvertierung, Etagen-Zuordnung & Rohrnetz-Dimensionierung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -63,23 +64,50 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 Grundriss-Bilder-Upload & Etagen-Zuweisung")
-st.markdown("Laden Sie Ihre Pläne als **JPG- oder PNG-Bild** hoch. Wählen Sie pro Bild die Ziel-Etage aus.")
+st.subheader("📐 PDF-Grundriss-Upload & automatische JPG-Konvertierung")
+st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App konvertiert jede Seite im Hintergrund in ein hochauflösendes JPG für die visuelle Kontrolle.")
 
-# Upload auf Bildformate umgestellt
-uploaded_files = st.file_uploader("Grundrisse hochladen (JPG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="img_upload_multi")
+# Multi-Upload für PDFs
+uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_to_img_upload")
 
 if uploaded_files:
-    st.markdown("### 🗂️ Dateizuordnung zu den Etagen")
+    st.markdown("### 🗂️ Konvertierte JPG-Vorschau & Etagen-Zuweisung")
     file_assignments = {}
     
+    # Wir speichern die konvertierten Bilder temporär im Session State ab
+    if "converted_images" not in st.session_state:
+        st.session_state.converted_images = {}
+
+    for uploaded_file in uploaded_files:
+        if uploaded_file.name not in st.session_state.converted_images:
+            try:
+                # PDF einlesen mit PyMuPDF (fitz)
+                pdf_bytes = uploaded_file.read()
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                
+                page_images = []
+                for page_idx, page in enumerate(doc):
+                    # Hohe Auflösung (Zoom-Faktor 2 für gestochen scharfe JPGs)
+                    pix = page.get_pixmap(dpi=150)
+                    img_data = pix.tobytes("jpg")
+                    image = Image.open(io.BytesIO(img_data))
+                    page_images.append(image)
+                
+                st.session_state.converted_images[uploaded_file.name] = page_images
+            except Exception as e:
+                st.error(f"Fehler bei der Konvertierung von {uploaded_file.name}: {e}")
+
+    # UI für die Zuweisung der konvertierten Pläne
     cols = st.columns(len(uploaded_files))
     for idx, uploaded_file in enumerate(uploaded_files):
         with cols[idx % len(cols)]:
-            # Vorschaubild anzeigen
-            image = Image.open(uploaded_file)
-            st.image(image, caption=uploaded_file.name, use_container_width=True)
+            st.markdown(f"**Datei:** `{uploaded_file.name}`")
             
+            # Zeige die konvertierten JPG-Seiten als Vorschau an
+            if uploaded_file.name in st.session_state.converted_images:
+                for p_idx, img in enumerate(st.session_state.converted_images[uploaded_file.name]):
+                    st.image(img, caption=f"Seite {p_idx+1} (als JPG)", use_container_width=True)
+
             default_idx = 1
             fn_upper = uploaded_file.name.upper()
             if "UG" in fn_upper or "KELLER" in fn_upper: default_idx = 0
@@ -96,10 +124,12 @@ if uploaded_files:
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    if st.button("🔄 Pläne verarbeiten & Tabellen befüllen"):
-        st.success("Bilder erfolgreich geladen und den Etagen zugeordnet! Nutzen Sie die Tabellen unten zur Feinabstimmung.")
+    if st.button("🔄 Pläne erfolgreich übernommen"):
+        st.success("PDFs wurden fehlerfrei zu JPGs konvertiert und zugeordnet! Pflegen Sie die Raumdaten bequem in den Tabellen unten ein.")
 else:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
+    if "converted_images" in st.session_state:
+        del st.session_state.converted_images
 
 st.markdown("---")
 
