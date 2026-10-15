@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung & saubere Textextraktion
+import fitz  # PyMuPDF für PDF-zu-Bild Konvertierung
+import pytesseract  # OCR-Texterkennung direkt auf dem JPG
 from PIL import Image
 import io
 import re
@@ -49,7 +50,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & Dropdown-Statuswahl für Räume*")
+    st.markdown("*PDF-Upload, JPG-Konvertierung & automatische OCR-Raumerfassung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -65,10 +66,10 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 PDF-Upload, JPG-Konvertierung & Raumanalyse")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App konvertiert sie zu JPGs für die Vorschau und liest die Räume aus.")
+st.subheader("📐 PDF-Upload, JPG-Konvertierung & OCR-Raumanalyse")
+st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App konvertiert sie zu JPGs und liest die Räume per Texterkennung aus.")
 
-uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_fitz_upload")
+uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_ocr_upload")
 
 if uploaded_files:
     st.markdown("### 🗂️ Konvertierte Pläne & Etagen-Zuweisung")
@@ -84,18 +85,14 @@ if uploaded_files:
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 
                 page_images = []
-                page_texts = []
                 for page in doc:
-                    pix = page.get_pixmap(dpi=150)
+                    # Höhere DPI (200) für optimale OCR-Erkennung von CAD-Zahlen
+                    pix = page.get_pixmap(dpi=200)
                     img_data = pix.tobytes("jpg")
                     image = Image.open(io.BytesIO(img_data))
                     page_images.append(image)
-                    page_texts.append(page.get_text())
                 
-                st.session_state.converted_data[uploaded_file.name] = {
-                    "images": page_images,
-                    "texts": page_texts
-                }
+                st.session_state.converted_data[uploaded_file.name] = page_images
             except Exception as e:
                 st.error(f"Fehler bei der Verarbeitung von {uploaded_file.name}: {e}")
 
@@ -105,7 +102,7 @@ if uploaded_files:
             st.markdown(f"**📄 Datei:** `{uploaded_file.name}`")
             
             if uploaded_file.name in st.session_state.converted_data:
-                for page_idx, img in enumerate(st.session_state.converted_data[uploaded_file.name]["images"]):
+                for page_idx, img in enumerate(st.session_state.converted_data[uploaded_file.name]):
                     st.image(img, caption=f"Seite {page_idx+1} (JPG-Ansicht)", use_container_width=True)
 
             default_idx = 1
@@ -124,18 +121,20 @@ if uploaded_files:
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    if st.button("🔄 Pläne auslesen & Tabellen befüllen"):
+    if st.button("🔄 Pläne per OCR auslesen & Tabellen befüllen"):
         temp_etagen = {k: [] for k in etagen_definitionen.keys()}
         
         try:
             for uploaded_file in uploaded_files:
                 target_etage = file_assignments[uploaded_file.name]
                 if uploaded_file.name in st.session_state.converted_data:
-                    for text in st.session_state.converted_data[uploaded_file.name]["texts"]:
-                        lines = [line.strip() for line in text.split('\n') if line.strip()]
+                    for img in st.session_state.converted_data[uploaded_file.name]:
+                        # OCR direkt auf das konvertierte JPG anwenden (Deutsch)
+                        ocr_text = pytesseract.image_to_string(img, lang='deu')
+                        lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
                         
                         for i, line in enumerate(lines):
-                            if "m²" in line or "m 2" in line or "F:" in line:
+                            if "m²" in line or "m 2" in line or "F:" in line or "m2" in line:
                                 match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
                                 if not match and "F:" in line:
                                     match = re.search(r"F:\s*([0-9.,]+)", line)
@@ -156,7 +155,7 @@ if uploaded_files:
                                                     idx_check = i + offset
                                                     if 0 <= idx_check < len(lines):
                                                         candidate = lines[idx_check]
-                                                        if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt", "DATUM", "PROJEKT", "BAUHERR"]):
+                                                        if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt", "DATUM", "PROJEKT", "BAUHERR", "Vorabzug"]):
                                                             room_name = candidate
                                                             break
                                             
@@ -185,9 +184,9 @@ if uploaded_files:
                                         pass
                                         
             st.session_state.etagen_daten = temp_etagen
-            st.success("Auswertung erfolgreich abgeschlossen! Die Tabellen wurden befüllt.")
+            st.success("OCR-Auswertung erfolgreich abgeschlossen! Die Tabellen wurden befüllt.")
         except Exception as e:
-            st.error(f"Fehler bei der Auswertung: {e}")
+            st.error(f"Fehler bei der OCR-Auswertung: {e}")
 else:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
     if "converted_data" in st.session_state:
@@ -218,7 +217,6 @@ for etage_key, etage_titel in etagen_definitionen.items():
         if "Status" not in df_etage.columns:
             df_etage.insert(0, "Status", "Beheizt")
     
-    # Dynamische Höhe ohne Scrollbalken
     num_rows = len(df_etage) if not df_etage.empty else 1
     editor_height = int((num_rows + 2) * 38) + 40
     
@@ -299,7 +297,7 @@ if warnungen_gesamt:
 
 # --- Summiertes Gesamtergebnis ---
 total_flaeche = sum([res["flaeche"] for res in etagen_ergebnisse.values()])
-total_unbeheizt = sum([res["unbeheizt"] for res in etagen_ergebnisse.values()])
+total_unbeheizt = sum([res["unbeheizt"] for res in etberg_ergebnisse.values()] if 'etberg_ergebnisse' in locals() else [res["unbeheizt"] for res in etagen_ergebnisse.values()])
 total_rohr = sum([res["rohr"] for res in etagen_ergebnisse.values()])
 kreise_str = " | ".join([f"{k}: {res['kreise']}" for k, res in etagen_ergebnisse.items() if res['kreise'] > 0])
 
