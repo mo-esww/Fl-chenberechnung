@@ -49,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & flexible Raum-Verwaltung*")
+    st.markdown("*PDF-Upload, Etagen-Zuordnung & max. Heizkreislänge (125m)*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -202,6 +202,7 @@ spalten_struktur = {
 
 # --- Dynamische Anzeige und Editierung für jede Etage ---
 etagen_ergebnisse = {}
+warnungen_gesamt = []
 
 for etage_key, etage_titel in etagen_definitionen.items():
     st.markdown(f"### 🏢 {etage_titel} ({etage_key})")
@@ -214,7 +215,6 @@ for etage_key, etage_titel in etagen_definitionen.items():
         if "Beheizt" not in df_etage.columns:
             df_etage.insert(0, "Beheizt", True)
     
-    # Hier nutzen wir column_config, damit die Checkbox sofort beim ersten Klick reagiert
     edited_df = st.data_editor(
         df_etage, 
         num_rows="dynamic", 
@@ -232,7 +232,12 @@ for etage_key, etage_titel in etagen_definitionen.items():
     
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
     
-    # Berechnungen trennen
+    # Berechnungen und Prüfung der max. Heizkreislänge (125m)
+    e_flaeche = 0
+    e_unbeheizt = 0
+    e_kreise = 0
+    e_rohr = 0
+    
     if not edited_df.empty and "Beheizt" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
         df_active = edited_df[edited_df["Beheizt"] == True]
         df_inactive = edited_df[edited_df["Beheizt"] == False]
@@ -241,15 +246,23 @@ for etage_key, etage_titel in etagen_definitionen.items():
         e_unbeheizt = df_inactive["Fläche [m²]"].sum() if not df_inactive.empty else 0
         e_kreise = int(df_active["Heizkreise"].sum()) if not df_active.empty and "Heizkreise" in df_active.columns else 0
         
-        e_rohr = 0
-        if not df_active.empty and "Verlegeabstand [cm]" in df_active.columns:
+        if not df_active.empty and "Verlegeabstand [cm]" in df_active.columns and "Heizkreise" in df_active.columns:
             for _, row in df_active.iterrows():
                 va = row.get("Verlegeabstand [cm]", 0)
                 fl = row.get("Fläche [m²]", 0)
+                kr = row.get("Heizkreise", 1)
+                room_name = row.get("Raumbezeichnung", "Unbekannt")
+                
                 if pd.notna(va) and pd.notna(fl) and va > 0:
-                    e_rohr += fl * (100.0 / va + 1.5)
-    else:
-        e_flaeche, e_unbeheizt, e_kreise, e_rohr = 0, 0, 0, 0
+                    raum_rohr = fl * (100.0 / va + 1.5)
+                    e_rohr += raum_rohr
+                    
+                    # Prüfung pro Heizkreis im Raum (angenommen gleichmäßige Verteilung bei mehreren Kreisen)
+                    if kr > 0:
+                        rohr_pro_kreis = raum_rohr / kr
+                        if rohr_pro_kreis > 125.0:
+                            warnung_txt = f"⚠️ **{etage_key} - {room_name}**: Ein Heizkreis hat ca. {rohr_pro_kreis:.1f} m (Limit: 125 m). Bitte Heizkreise erhöhen!"
+                            warnungen_gesamt.append(warnung_txt)
     
     etagen_ergebnisse[etage_key] = {
         "flaeche": e_flaeche, 
@@ -268,6 +281,13 @@ for etage_key, etage_titel in etagen_definitionen.items():
     with col4:
         st.metric(label=f"Rohrbedarf {etage_key}", value=f"{e_rohr:.0f} m")
         
+    st.markdown("---")
+
+# Warnhinweise anzeigen, falls Kreise > 125m sind
+if warnungen_gesamt:
+    st.error("### ⚠️ Hinweis zur max. Heizkreislänge (125m)")
+    for w in warnungen_gesamt:
+        st.warning(w)
     st.markdown("---")
 
 # --- Summiertes Gesamtergebnis ---
