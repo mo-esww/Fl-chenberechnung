@@ -50,7 +50,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, JPG-Konvertierung & automatische OCR-Raumerfassung*")
+    st.markdown("*PDF-Upload, JPG-Konvertierung & intelligente CAD-Raumerkennung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -66,8 +66,8 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 PDF-Upload, JPG-Konvertierung & OCR-Raumanalyse")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App konvertiert sie zu JPGs und liest die Räume per Texterkennung aus.")
+st.subheader("📐 PDF-Upload, JPG-Konvertierung & Raumanalyse")
+st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App filtert Bauteilnotizen heraus und extrahiert automatisch die Räume.")
 
 uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_ocr_upload")
 
@@ -86,8 +86,8 @@ if uploaded_files:
                 
                 page_images = []
                 for page in doc:
-                    # Höhere DPI (200) für optimale OCR-Erkennung von CAD-Zahlen
-                    pix = page.get_pixmap(dpi=200)
+                    # Hohe Auflösung für präzise CAD-Erkennung
+                    pix = page.get_pixmap(dpi=250)
                     img_data = pix.tobytes("jpg")
                     image = Image.open(io.BytesIO(img_data))
                     page_images.append(image)
@@ -121,19 +121,33 @@ if uploaded_files:
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    if st.button("🔄 Pläne per OCR auslesen & Tabellen befüllen"):
+    if st.button("🔄 Pläne automatisch auslesen & Tabellen befüllen"):
         temp_etagen = {k: [] for k in etagen_definitionen.keys()}
+        
+        # Begriffe, die sicherstellen, dass es KEIN Raum ist (Bauteile, Notizen etc.)
+        ungueltige_begriffe = [
+            "fundament", "abbruch", "dampfsperre", "bodenplatte", "pos", "wand", 
+            "gk", "u:", "lung", "et", "blatt", "vorabzug", "stand", "architekt", 
+            "allplan", "beetzendorf", "hinweis", "massstab", "datum", "bauherr",
+            "projekt", "über", "ünn", "schnitt", "ansicht", "folie"
+        ]
         
         try:
             for uploaded_file in uploaded_files:
                 target_etage = file_assignments[uploaded_file.name]
                 if uploaded_file.name in st.session_state.converted_data:
                     for img in st.session_state.converted_data[uploaded_file.name]:
-                        # OCR direkt auf das konvertierte JPG anwenden (Deutsch)
+                        # OCR-Auswertung auf das JPG
                         ocr_text = pytesseract.image_to_string(img, lang='deu')
                         lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
                         
                         for i, line in enumerate(lines):
+                            line_lower = line.lower()
+                            
+                            # Wenn die Zeile Bauteil-Keywords enthält, komplett überspringen
+                            if any(term in line_lower for term in ungueltige_begriffe):
+                                continue
+                                
                             if "m²" in line or "m 2" in line or "F:" in line or "m2" in line:
                                 match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
                                 if not match and "F:" in line:
@@ -144,26 +158,34 @@ if uploaded_files:
                                         val_str = match.group(1).replace(',', '.')
                                         area = float(val_str)
                                         
-                                        if 1.0 < area < 500:
+                                        # Sinnvoller Filter für Raumgrößen (z. B. zwischen 2 m² und 150 m²)
+                                        if 2.0 <= area <= 150.0:
                                             room_name = ""
                                             clean_line = re.sub(r'[0-9.,]+\s*m[²2]', '', line).strip()
+                                            clean_line = re.sub(r'F:\s*[0-9.,]+', '', clean_line).strip()
                                             
-                                            if len(clean_line) > 1 and not clean_line.isdigit():
+                                            if len(clean_line) > 2 and not clean_line.replace('.', '').isdigit():
                                                 room_name = clean_line
                                             else:
+                                                # Suche in Nachbarzeilen nach einem echten Raumnamen
                                                 for offset in [-1, 1, -2, 2]:
                                                     idx_check = i + offset
                                                     if 0 <= idx_check < len(lines):
                                                         candidate = lines[idx_check]
-                                                        if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt", "DATUM", "PROJEKT", "BAUHERR", "Vorabzug"]):
+                                                        candidate_lower = candidate.lower()
+                                                        if not any(term in candidate_lower for term in ungueltige_begriffe) and len(candidate) > 2:
                                                             room_name = candidate
                                                             break
                                             
                                             if not room_name or room_name.replace('.', '', 1).isdigit():
                                                 room_name = "Raum"
 
-                                            room_name = room_name.replace("m²", "").strip()
+                                            # Bereinige Sonderzeichen im Raumnamen
+                                            room_name = re.sub(r'[^a-zA-ZäöüÄÖÜß0-9\s]', '', room_name).strip()
+                                            if not room_name:
+                                                room_name = "Raum"
 
+                                            # Verlegeabstand und Heizkreise bestimmen (max. 125m Schutz)
                                             va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
                                             
                                             rohr_gesamt = area * (100.0 / va + 1.5)
@@ -171,6 +193,7 @@ if uploaded_files:
                                             while (rohr_gesamt / kreise) > 125.0:
                                                 kreise += 1
 
+                                            # Doppelte Flächenvermeidung
                                             existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
                                             if area not in existing_areas:
                                                 temp_etagen[target_etage].append({
@@ -184,9 +207,9 @@ if uploaded_files:
                                         pass
                                         
             st.session_state.etagen_daten = temp_etagen
-            st.success("OCR-Auswertung erfolgreich abgeschlossen! Die Tabellen wurden befüllt.")
+            st.success("Automatische Auswertung erfolgreich abgeschlossen! Die Bauteilnotizen wurden herausgefiltert.")
         except Exception as e:
-            st.error(f"Fehler bei der OCR-Auswertung: {e}")
+            st.error(f"Fehler bei der automatischen Auswertung: {e}")
 else:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
     if "converted_data" in st.session_state:
@@ -297,7 +320,7 @@ if warnungen_gesamt:
 
 # --- Summiertes Gesamtergebnis ---
 total_flaeche = sum([res["flaeche"] for res in etagen_ergebnisse.values()])
-total_unbeheizt = sum([res["unbeheizt"] for res in etberg_ergebnisse.values()] if 'etberg_ergebnisse' in locals() else [res["unbeheizt"] for res in etagen_ergebnisse.values()])
+total_unbeheizt = sum([res["unbeheizt"] for res in etagen_ergebnisse.values()])
 total_rohr = sum([res["rohr"] for res in etagen_ergebnisse.values()])
 kreise_str = " | ".join([f"{k}: {res['kreise']}" for k, res in etagen_ergebnisse.items() if res['kreise'] > 0])
 
