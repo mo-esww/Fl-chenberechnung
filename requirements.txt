@@ -5,3 +5,4 @@ pypdf
 PyMuPDF
 Pillow
 pdf2image
+pytesseract
