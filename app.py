@@ -46,8 +46,8 @@ with col_logo:
     st.image("https://www.es-ww.de/wp-content/uploads/2023/02/Logo_ESW_farbig-2048x546.png", width=280)
 
 with col_title:
-    st.title("Fußbodenheizungs-Planer für Mehrfamilien- & Wohngebäude")
-    st.markdown("*Automatisierte Grundriss-Auswertung für beliebig viele Etagen (UG, EG, OG, DG)*")
+    st.title("Fußbodenheizungs-Planer für Wohngebäude")
+    st.markdown("*Automatisierte Grundriss-Auswertung & Etagen-Zuweisung (UG, EG, OG, DG)*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -56,11 +56,10 @@ st.markdown("---")
 # FUSSBODENHEIZUNG & MEHR-ETAGEN-PLANUNG
 # ==========================================
 st.subheader("📐 Grundriss-Auswertung über mehrere Geschosse")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App erkennt oder verteilt die Räume automatisch auf die Etagen (UG, EG, OG, DG).")
+st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App liest die Räume aus und teilt sie den Etagen zu. Sie können die Tabellen unten jederzeit manuell ergänzen oder anpassen.")
 
 uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_multi")
 
-# Etagen-Struktur definieren
 etagen_definitionen = {
     "UG": "Untergeschoss / Keller",
     "EG": "Erdgeschoss",
@@ -68,33 +67,22 @@ etagen_definitionen = {
     "DG": "Dachgeschoss"
 }
 
-# Initialisierung der Session States für jede Etage
+# Initialisierung der Session States
 if "etagen_daten" not in st.session_state or uploaded_files:
-    # Standard-Fallbacks falls noch keine Pläne hochgeladen wurden
-    st.session_state.etagen_daten = {
-        "UG": [{"Raumbezeichnung": "Keller / Technik", "Fläche [m²]": 20.0, "Verlegeabstand [cm]": 20, "Heizkreise": 1}],
-        "EG": [
-            {"Raumbezeichnung": "Essen/Wohnen", "Fläche [m²]": 55.04, "Verlegeabstand [cm]": 15, "Heizkreise": 3},
-            {"Raumbezeichnung": "Küche", "Fläche [m²]": 17.81, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-            {"Raumbezeichnung": "Diele", "Fläche [m²]": 13.50, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-            {"Raumbezeichnung": "Duschbad", "Fläche [m²]": 5.70, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
-        ],
-        "OG": [
-            {"Raumbezeichnung": "Schlafen", "Fläche [m²]": 20.0, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-            {"Raumbezeichnung": "Kind 1", "Fläche [m²]": 16.0, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-        ],
-        "DG": [
-            {"Raumbezeichnung": "Studio / Dachboden", "Fläche [m²]": 25.0, "Verlegeabstand [cm]": 15, "Heizkreise": 1}
-        ]
-    }
+    temp_etagen = {k: [] for k in etagen_definitionen.keys()}
+    
+    # Standard-Fallback
+    temp_etagen["EG"] = [
+        {"Raumbezeichnung": "Essen/Wohnen", "Fläche [m²]": 55.04, "Verlegeabstand [cm]": 15, "Heizkreise": 3},
+        {"Raumbezeichnung": "Küche", "Fläche [m²]": 17.81, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+        {"Raumbezeichnung": "Diele", "Fläche [m²]": 13.50, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+        {"Raumbezeichnung": "Duschbad", "Fläche [m²]": 5.70, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
+    ]
 
     if uploaded_files:
-        # Etagen leeren und neu füllen durch Auslesen
-        temp_etagen = {k: [] for k in etagen_definitionen.keys()}
         try:
             for uploaded_file in uploaded_files:
                 filename_upper = uploaded_file.name.upper()
-                # Bestimme Ziel-Etage anhand des Dateinamens falls möglich, sonst Standard EG
                 ziel_etage = "EG"
                 for etage_key in etagen_definitionen.keys():
                     if etage_key in filename_upper:
@@ -104,63 +92,67 @@ if "etagen_daten" not in st.session_state or uploaded_files:
                 for page in reader.pages:
                     text = page.extract_text()
                     lines = [line.strip() for line in text.split('\n') if line.strip()]
+                    
                     for i, line in enumerate(lines):
                         area = None
-                        room_name = "Raum"
+                        room_name = ""
 
-                        if "m²" in line or "m 2" in line:
-                            match = re.search(r'([0-9.,]+)\s*m[²2]', line)
+                        # Verbesserte Erkennung für verschiedene Flächenformate (z.B. "55.04 m²", "F: 12.11 m 2")
+                        if "m²" in line or "m 2" in line or "F:" in line:
+                            match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
+                            if not match and "F:" in line:
+                                match = re.search(r"F:\s*([0-9.,]+)", line)
+                                
                             if match:
                                 try:
-                                    area = float(match.group(1).replace(',', '.'))
-                                    room_name = lines[i-1] if i > 0 else "Raum"
-                                except ValueError:
-                                    pass
-                        elif "F:" in line:
-                            match = re.search(r"F:\s*([0-9.,]+)", line)
-                            if match:
-                                try:
-                                    area = float(match.group(1).replace(',', '.'))
-                                    room_name = lines[i-1] if i > 0 else "Raum"
+                                    val_str = match.group(1).replace(',', '.')
+                                    area = float(val_str)
+                                    # Suche in der direkten Umgebung nach dem RaumNamen
+                                    if i > 0:
+                                        room_name = lines[i-1]
+                                    if not room_name or len(room_name) < 2 or any(char.isdigit() for char in room_name):
+                                        if i > 1:
+                                            room_name = lines[i-2]
                                 except ValueError:
                                     pass
 
-                        if area is not None and area < 500:
-                            if any(x in room_name for x in ["Allplan", "Beetzendorf", "Blatt", "Architekt"]):
+                        if area is not None and 1.0 < area < 400: # Realistischer Flächenbereich für Räume
+                            # Unwichtige Systemtexte filtern
+                            if any(x in room_name for x in ["Allplan", "Beetzendorf", "Blatt", "Architekt", "Stg", "Mauer"]):
                                 continue
-                            va = 10 if "Bad" in room_name.lower() or "Duschbad" in room_name.lower() else 15
+                            if not room_name:
+                                room_name = "Raum (unbenannt)"
+
+                            va = 10 if "bad" in room_name.lower() or "wc" in room_name.lower() else 15
                             kreise = max(1, round(area / 18))
                             
-                            temp_etagen[ziel_etage].append({
-                                "Raumbezeichnung": room_name,
-                                "Fläche [m²]": area,
-                                "Verlegeabstand [cm]": va,
-                                "Heizkreise": kreise
-                            })
+                            # Vermeide Doppeleinträge derselben Fläche
+                            existing_areas = [r["Fläche [m²]"] for r in temp_etagen[ziel_etage]]
+                            if area not in existing_areas:
+                                temp_etagen[ziel_etage].append({
+                                    "Raumbezeichnung": room_name,
+                                    "Fläche [m²]": area,
+                                    "Verlegeabstand [cm]": va,
+                                    "Heizkreise": kreise
+                                })
             
-            # Übernahme falls Räume gefunden wurden
-            if any(temp_etagen.values()):
-                st.session_state.etagen_daten = temp_etagen
-                st.success("Pläne erfolgreich analysiert und auf die Geschosse aufgeteilt!")
+            st.session_state.etagen_daten = temp_etagen
+            st.success("Pläne erfolgreich eingelesen! Sie können fehlende Räume in den Tabellen unten auch direkt per Hand hinzufügen.")
         except Exception as e:
             st.error(f"Fehler beim Auslesen der Dateien: {e}")
 
 # --- Dynamische Anzeige und Editierung für jede Etage ---
-gesamt_flaeche = 0
-gesamt_rohr = ohne_summe_kreise = {}
 etagen_ergebnisse = {}
 
 for etage_key, etage_titel in etagen_definitionen.items():
     st.markdown(f"### 🏢 {etage_titel} ({etage_key})")
     
-    # DataFrame aus Session State holen
     df_etage = pd.DataFrame(st.session_state.etagen_daten[etage_key])
     
-    # Editor für diese Etage
+    # Interaktiver Editor (hier kannst du ganz einfach Zeilen hinzufügen oder korrigieren)
     edited_df = st.data_editor(df_etage, num_rows="dynamic", use_container_width=True, key=f"editor_{etage_key}")
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
     
-    # Berechnungen pro Etage
     e_flaeche = edited_df["Fläche [m²]"].sum() if not edited_df.empty else 0
     e_kreise = int(edited_df["Heizkreise"].sum()) if not edited_df.empty else 0
     e_rohr = sum([fl * (100.0 / va + 1.5) for _, row in edited_df.iterrows() for va, fl in [(row["Verlegeabstand [cm]"], row["Fläche [m²]"])] if va > 0]) if not edited_df.empty else 0
@@ -177,7 +169,7 @@ for etage_key, etage_titel in etagen_definitionen.items():
         
     st.markdown("---")
 
-# --- Summiertes Gesamtergebnis über alle Etagen ---
+# --- Summiertes Gesamtergebnis ---
 total_flaeche = sum([res["flaeche"] for res in etagen_ergebnisse.values()])
 total_rohr = sum([res["rohr"] for res in etagen_ergebnisse.values()])
 kreise_str = " | ".join([f"{k}: {res['kreise']}" for k, res in etagen_ergebnisse.items() if res['kreise'] > 0])
