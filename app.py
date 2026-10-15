@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import pypdf
+import re
 
 # --- Seiten-Konfiguration & Corporate Design ---
 st.set_page_config(
@@ -51,7 +53,7 @@ with col_title:
 st.markdown("---")
 
 # --- Tabs für die Navigation ---
-tab_wp, tab_fbh = st.tabs(["🔥 Wärmepumpen & Bivalenzpunkt", "📐 Fußbodenheizung & Raumplanung"])
+tab_wp, tab_fbh = st.tabs(["🔥 Wärmepumpen & Bivalenzpunkt", "📐 Fußbodenheizung per Plan-Upload"])
 
 # ==========================================
 # TAB 1: WÄRMEPUMPEN & BIVALENZPUNKT
@@ -237,52 +239,82 @@ with tab_wp:
 
 
 # ==========================================
-# TAB 2: FUSSBODENHEIZUNG & RAUMPLANUNG
+# TAB 2: FUSSBODENHEIZUNG & PLAN-UPLOAD
 # ==========================================
 with tab_fbh:
-    st.subheader("📐 Fußbodenheizungs-Auslegung nach Raumliste")
-    st.markdown("Tragen Sie hier Ihre echten Raumbezeichnungen, die zugehörigen Flächen aus dem Plan sowie den gewünschten Verlegeabstand ein. Die Gesamtfläche, Heizkreise und der Rohrbedarf werden automatisch berechnet.")
+    st.subheader("📐 Automatische Grundriss-Auswertung (PDF)")
+    st.markdown("Laden Sie Ihren Vorabzug-Plan als PDF hoch. Die App liest die Raumbezeichnungen und Flächen aus dem Dokument aus.")
 
-    # Initial-Daten als leere / editierbare Tabelle
-    if "df_raeume" not in st.session_state:
-        st.session_state.df_raeume = pd.DataFrame([
-            {"Raumbezeichnung": "Wohnen / Essen", "Fläche [m²]": 35.0, "Verlegeabstand [cm]": 10, "Heizkreise": 2},
-            {"Raumbezeichnung": "Küche", "Fläche [m²]": 12.0, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
-            {"Raumbezeichnung": "Bad", "Fläche [m²]": 8.0, "Verlegeabstand [cm]": 5, "Heizkreise": 1},
-            {"Raumbezeichnung": "Schlafen", "Fläche [m²]": 16.0, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
-            {"Raumbezeichnung": "Flur", "Fläche [m²]": 10.0, "Verlegeabstand [cm]": 15, "Heizkreise": 1}
-        ])
+    uploaded_file = st.file_uploader("Grundriss hochladen (PDF)", type=["pdf"])
 
-    # Interaktiver Editor für den Anwender
-    edited_df = st.data_editor(
-        st.session_state.df_raeume, 
-        num_rows="dynamic",
-        use_container_width=True
-    )
-    st.session_state.df_raeume = edited_df
+    extracted_rooms = []
+    if uploaded_file is not None:
+        try:
+            reader = pypdf.PdfReader(uploaded_file)
+            for page in reader.pages:
+                text = page.extract_text()
+                lines = text.split('\n')
+                for i, line in enumerate(lines):
+                    if "F:" in line and "m" in line:
+                        match = re.search(r"F:\s*([0-9.,]+)", line)
+                        if match:
+                            area_str = match.group(1).replace(',', '.')
+                            try:
+                                area = float(area_str)
+                                room_name = lines[i-1].strip() if i > 0 else "Raum"
+                                # Sinnvolle Standard-Verlegeabstände zuordnen
+                                va = 10 if "Bad" in room_name else 15
+                                kreise = max(1, round(area / 18))
+                                extracted_rooms.append({
+                                    "Raumbezeichnung": room_name,
+                                    "Fläche [m²]": area,
+                                    "Verlegeabstand [cm]": va,
+                                    "Heizkreise": kreise
+                                })
+                            except ValueError:
+                                pass
+            if extracted_rooms:
+                st.success(f"Plan erfolgreich ausgelesen! {len(extracted_rooms)} Räume erkannt.")
+            else:
+                st.warning("Es konnten keine Raumflächen im Standardformat (F: X.XX m²) im Dokument gefunden werden.")
+        except Exception as e:
+            st.error(f"Fehler beim Lesen der PDF: {e}")
 
-    # Berechnungen basierend auf den aktuellen Tabelleneinträgen
+    # Falls keine PDF hochgeladen wurde oder leer, Standard-Fallback für den Editor
+    if not extracted_rooms:
+        extracted_rooms = [
+            {"Raumbezeichnung": "Wohnen / Essen / Kochen", "Fläche [m²]": 83.29, "Verlegeabstand [cm]": 15, "Heizkreise": 5},
+            {"Raumbezeichnung": "Kind 1", "Fläche [m²]": 17.91, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "Kind 2", "Fläche [m²]": 17.90, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "Schlafen", "Fläche [m²]": 16.08, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
+            {"Raumbezeichnung": "Büro", "Fläche [m²]": 30.43, "Verlegeabstand [cm]": 15, "Heizkreise": 2},
+            {"Raumbezeichnung": "Bad", "Fläche [m²]": 9.66, "Verlegeabstand [cm]": 10, "Heizkreise": 1},
+        ]
+
+    df_raeume = pd.DataFrame(extracted_rooms)
+    
+    st.markdown("### 📋 Erkannte / bearbeitbare Raumliste")
+    st.markdown("Sie können die automatisch ausgelesenen Werte in der Tabelle bei Bedarf direkt anpassen:")
+    
+    edited_df = st.data_editor(df_raeume, num_rows="dynamic", use_container_width=True)
+
     if not edited_df.empty:
         gesamt_flaeche = edited_df["Fläche [m²]"].sum()
         gesamt_kreise = edited_df["Heizkreise"].sum()
         
-        # Rohrbedarf-Schätzung abhängig vom Verlegeabstand (VA)
-        # ca. 1000 / VA [cm] ergibt Meter Rohr pro m² (z.B. VA 10 = ~10m/m², VA 15 = ~7m/m², inkl. Anbindung)
         rohrbedarf_gesamt = 0
         for _, row in edited_df.iterrows():
             va = row["Verlegeabstand [cm]"]
             fl = row["Fläche [m²]"]
             if va > 0:
-                faktor = 100.0 / va + 1.5 # Faustformel inkl. Randzone & Anbindung
+                faktor = 100.0 / va + 1.5 # Faustformel inkl. Anbindung
                 rohrbedarf_gesamt += fl * faktor
 
         st.markdown("---")
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
-            st.metric(label="Gesamt-Beheizte Fläche", value=f"{gesamt_flaeche:.1f} m²")
+            st.metric(label="Gesamt-Beheizte Fläche", value=f"{gesamt_flaeche:.2f} m²")
         with col_f2:
             st.metric(label="Anzahl Heizkreise gesamt", value=f"{int(gesamt_kreise)} Kreise")
         with col_f3:
             st.metric(label="Geschätzter Rohrbedarf", value=f"{rohrbedarf_gesamt:.0f} Meter")
-            
-        st.success("✅ Raumliste erfolgreich ausgewertet und berechnet!")
