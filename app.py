@@ -47,16 +47,10 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*Automatisierte Grundriss-Auswertung (Multi-Upload) & Etagen-Zuweisung*")
+    st.markdown("*Gezielte Etagen-Zuordnung & flexible Raum-Auswertung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
-
-# ==========================================
-# FUSSBODENHEIZUNG & MEHR-ETAGEN-PLANUNG
-# ==========================================
-st.subheader("📐 Automatische Grundriss-Auswertung & Tabellen-Befüllung")
-st.markdown("Laden Sie hier Ihre Plan-PDFs hoch. Die Tabellen füllen sich automatisch mit den erkannten Räumen und Flächen.")
 
 etagen_definitionen = {
     "UG": "Untergeschoss / Keller",
@@ -65,35 +59,41 @@ etagen_definitionen = {
     "DG": "Dachgeschoss"
 }
 
-# Initialisierung der Session State Daten (standardmäßig leer)
+# Initialisierung der Tabellen im Session State (standardmäßig leer)
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-if "last_uploaded_files" not in st.session_state:
-    st.session_state.last_uploaded_files = []
+st.subheader("📐 Grundriss-Upload & Etagen-Zuweisung")
+st.markdown("Laden Sie Ihre Pläne hoch. Für jede hochgeladene Datei können Sie im Anschluss exakt festlegen, zu welcher Etage sie gehört.")
 
-# Datei-Upload für mehrere PDFs
 uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_multi")
 
-uploaded_files_names = [f.name for f in uploaded_files] if uploaded_files else []
+# Wenn Dateien hochgeladen wurden, weisen wir jeder Datei manuell eine Etage zu
+if uploaded_files:
+    st.markdown("### 🗂️ Dateizuordnung zu den Etagen")
+    file_assignments = {}
+    
+    cols = st.columns(len(uploaded_files))
+    for idx, uploaded_file in enumerate(uploaded_files):
+        with cols[idx % len(cols)]:
+            st.markdown(f"**Datei:** `{uploaded_file.name}`")
+            # Dropdown für die exakte Etagenwahl
+            chosen_etage = st.selectbox(
+                "Ziel-Etage wählen:",
+                options=list(etagen_definitionen.keys()),
+                format_func=lambda x: etagen_definitionen[x],
+                key=f"assign_{uploaded_file.name}"
+            )
+            file_assignments[uploaded_file.name] = chosen_etage
 
-# Wenn neue Dateien hochgeladen oder entfernt werden, verarbeiten wir den Upload neu
-if uploaded_files_names != st.session_state.last_uploaded_files:
-    st.session_state.last_uploaded_files = uploaded_files_names
-    
-    # Etagen-Daten zurücksetzen
-    temp_etagen = {k: [] for k in etagen_definitionen.keys()}
-    
-    if uploaded_files:
+    # Button zum Einlesen basierend auf der manuellen Zuordnung
+    if st.button("🔄 Pläne mit gewählter Zuordnung auslesen"):
+        temp_etagen = {k: [] for k in etagen_definitionen.keys()}
         try:
             for uploaded_file in uploaded_files:
-                filename_upper = uploaded_file.name.upper()
-                ziel_etage = "EG" # Standard-Fallback
-                for etage_key in etagen_definitionen.keys():
-                    if etage_key in filename_upper:
-                        ziel_etage = etage_key
-
+                target_etage = file_assignments[uploaded_file.name]
                 reader = pypdf.PdfReader(uploaded_file)
+                
                 for page in reader.pages:
                     text = page.extract_text()
                     lines = [line.strip() for line in text.split('\n') if line.strip()]
@@ -102,7 +102,7 @@ if uploaded_files_names != st.session_state.last_uploaded_files:
                         area = None
                         room_name = ""
 
-                        # Erkennung von Flächenformaten (z.B. "55.04 m²" oder "F: 12.11 m 2")
+                        # Erkennung von Flächenformaten
                         if "m²" in line or "m 2" in line or "F:" in line:
                             match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
                             if not match and "F:" in line:
@@ -121,7 +121,7 @@ if uploaded_files_names != st.session_state.last_uploaded_files:
                                     pass
 
                         if area is not None and 1.0 < area < 500:
-                            if any(x in room_name for x in ["Allplan", "Beetzendorf", "Blatt", "Architekt", "Stg", "Mauer", "ÜNN"]):
+                            if any(x in room_name for x in ["Allplan", "Beetzendorf", "Blatt", "Architekt", "Stg", "Mauer", "ÜNN", "H/B"]):
                                 continue
                             if not room_name:
                                 room_name = "Raum"
@@ -129,23 +129,24 @@ if uploaded_files_names != st.session_state.last_uploaded_files:
                             va = 10 if "bad" in room_name.lower() or "wc" in room_name.lower() or "duschbad" in room_name.lower() else 15
                             kreise = max(1, round(area / 18))
                             
-                            # Vermeide exakte Doppelteinträge
-                            existing_areas = [r["Fläche [m²]"] for r in temp_etagen[ziel_etage]]
+                            existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
                             if area not in existing_areas:
-                                temp_etagen[ziel_etage].append({
-                                "Raumbezeichnung": room_name,
-                                "Fläche [m²]": area,
-                                "Verlegeabstand [cm]": va,
-                                "Heizkreise": kreise
-                            })
+                                temp_etagen[target_etage].append({
+                                    "Raumbezeichnung": room_name,
+                                    "Fläche [m²]": area,
+                                    "Verlegeabstand [cm]": va,
+                                    "Heizkreise": kreise
+                                })
             
             st.session_state.etagen_daten = temp_etagen
-            st.success("Pläne erfolgreich eingelesen und Tabellen automatisch befüllt!")
+            st.success("Erfolgreich eingelesen! Die Tabellen wurden entsprechend Ihrer Etagen-Zuweisung aktualisiert.")
         except Exception as e:
-            st.error(f"Fehler beim Auslesen der Dateien: {e}")
-    else:
-        # Wenn alle Dateien gelöscht wurden, bleiben die Tabellen leer
-        st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
+            st.error(f"Fehler beim Auslesen: {e}")
+else:
+    # Wenn keine Dateien hochgeladen sind, Tabellen leeren
+    st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
+
+st.markdown("---")
 
 spalten_struktur = {
     "Raumbezeichnung": [],
@@ -171,7 +172,7 @@ for etage_key, etage_titel in etagen_definitionen.items():
         num_rows="dynamic", 
         use_container_width=True, 
         key=f"editor_{etage_key}",
-        placeholder="Keine Räume vorhanden. Laden Sie einen Plan hoch oder fügen Sie manuell Zeilen hinzu..."
+        placeholder="Keine Räume vorhanden. Laden Sie einen Plan hoch, weisen Sie ihn zu oder fügen Sie manuell Zeilen hinzu..."
     )
     
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
