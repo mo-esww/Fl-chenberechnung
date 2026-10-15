@@ -49,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*PDF-Upload, Etagen-Zuordnung & getrennte Auswertung (Beheizt / Unbeheizt)*")
+    st.markdown("*PDF-Upload, Etagen-Zuordnung & flexible Raum-Verwaltung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -214,17 +214,25 @@ for etage_key, etage_titel in etagen_definitionen.items():
         if "Beheizt" not in df_etage.columns:
             df_etage.insert(0, "Beheizt", True)
     
+    # Hier nutzen wir column_config, damit die Checkbox sofort beim ersten Klick reagiert
     edited_df = st.data_editor(
         df_etage, 
         num_rows="dynamic", 
         use_container_width=True, 
         key=f"editor_{etage_key}",
+        column_config={
+            "Beheizt": st.column_config.CheckboxColumn(
+                "Beheizt",
+                help="Häkchen entfernen, wenn der Raum unbeheizt ist.",
+                default=True,
+            )
+        },
         placeholder="Klicken Sie oben auf den Auslesen-Button oder fügen Sie Räume hinzu..."
     )
     
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
     
-    # Berechnungen für beheizte und unbeheizte Flächen trennen
+    # Berechnungen trennen
     if not edited_df.empty and "Beheizt" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
         df_active = edited_df[edited_df["Beheizt"] == True]
         df_inactive = edited_df[edited_df["Beheizt"] == False]
