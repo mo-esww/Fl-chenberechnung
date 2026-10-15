@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import pypdf
+from pdf2image import convert_from_bytes
 from PIL import Image
+import io
 
 # --- Seiten-Konfiguration & Corporate Design ---
 st.set_page_config(
@@ -46,7 +49,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*Visuelle Etagen-Planung per Bild-Upload (JPG / PNG) & Rohrnetz-Dimensionierung*")
+    st.markdown("*PDF-Upload mit automatischer JPG-Konvertierung für präzise Raum-Erfassung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -62,23 +65,40 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 Grundriss-Bilder-Upload & Etagen-Zuweisung")
-st.markdown("Laden Sie Ihre Pläne als **JPG- oder PNG-Bild** hoch und weisen Sie sie den Etagen zu.")
+st.subheader("📐 PDF-Upload & Automatische JPG-Konvertierung")
+st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App wandelt diese im Hintergrund in JPG-Bilder um, damit die Grundrisse visuell und verlustfrei verarbeitet werden können.")
 
-# Bild-Upload (vermeidet Installationsprobleme auf Streamlit Cloud)
-uploaded_files = st.file_uploader("Grundrisse hochladen (JPG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="img_upload_multi")
+# PDF-Uploader
+uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_to_jpg_upload")
 
 if uploaded_files:
-    st.markdown("### 🗂️ Dateizuordnung zu den Etagen")
+    st.markdown("### 🗂️ Konvertierte JPG-Ansicht & Etagen-Zuweisung")
     file_assignments = {}
     
+    if "converted_jpgs" not in st.session_state:
+        st.session_state.converted_jpgs = {}
+
+    for uploaded_file in uploaded_files:
+        if uploaded_file.name not in st.session_state.converted_jpgs:
+            try:
+                # PDF-Bytes in JPG-Bilder konvertieren
+                pdf_bytes = uploaded_file.read()
+                images = convert_from_bytes(pdf_bytes, dpi=150)
+                st.session_state.converted_jpgs[uploaded_file.name] = images
+            except Exception as e:
+                st.error(f"Fehler bei der JPG-Konvertierung von {uploaded_file.name}: {e}")
+
     cols = st.columns(len(uploaded_files))
     for idx, uploaded_file in enumerate(uploaded_files):
         with cols[idx % len(cols)]:
-            # Vorschaubild anzeigen
-            image = Image.open(uploaded_file)
-            st.image(image, caption=uploaded_file.name, use_container_width=True)
+            st.markdown(f"**📄 Datei:** `{uploaded_file.name}`")
             
+            # Zeige die konvertierten JPG-Seiten als Vorschau
+            if uploaded_file.name in st.session_state.converted_jpgs:
+                for page_idx, img in enumerate(st.session_state.converted_jpgs[uploaded_file.name]):
+                    st.image(img, caption=f"Seite {page_idx+1} (als JPG konvertiert)", use_container_width=True)
+
+            # Intelligente Vorauserkennung für das Etagen-Dropdown
             default_idx = 1
             fn_upper = uploaded_file.name.upper()
             if "UG" in fn_upper or "KELLER" in fn_upper: default_idx = 0
@@ -95,10 +115,12 @@ if uploaded_files:
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    if st.button("🔄 Pläne erfolgreich übernommen"):
-        st.success("Pläne erfolgreich geladen und den Etagen zugeordnet!")
+    if st.button("🔄 Konvertierte Pläne übernehmen"):
+        st.success("PDFs wurden erfolgreich in JPGs konvertiert und den Etagen zugewiesen!")
 else:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
+    if "converted_jpgs" in st.session_state:
+        del st.session_state.converted_jpgs
 
 st.markdown("---")
 
