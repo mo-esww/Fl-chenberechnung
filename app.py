@@ -47,7 +47,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer nach Etagen")
-    st.markdown("*Automatisierte Grundriss-Auswertung (EG & DG) und Rohrnetz-Dimensionierung*")
+    st.markdown("*Automatisierte Grundriss-Auswertung (Mehrere PDFs möglich) und Rohrnetz-Dimensionierung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -55,53 +55,56 @@ st.markdown("---")
 # ==========================================
 # FUSSBODENHEIZUNG & ETAGEN-PLANUNG
 # ==========================================
-st.subheader("📐 Automatische Grundriss-Auswertung nach Etagen (EG & DG)")
-st.markdown("Laden Sie Ihren Plan als PDF hoch. Die App trennt die Räume automatisch in Erdgeschoss (EG) und Dachgeschoss (DG) und erlaubt die manuelle Nachbearbeitung.")
+st.subheader("📐 Automatische Grundriss-Auswertung (Multi-Upload)")
+st.markdown("Laden Sie hier eine oder **mehrere** Plan-PDFs hoch. Die App startet die Auswertung und Berechnung bei jeder Änderung automatisch neu.")
 
-uploaded_file = st.file_uploader("Grundriss hochladen (PDF)", type=["pdf"], key="pdf_upload_etagen")
+# accept_multiple_files=True ermöglicht den Upload mehrerer Dateien
+uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_etagen")
 
 eg_rooms = []
 dg_rooms = []
 
-if uploaded_file is not None:
+if uploaded_files:
     try:
-        reader = pypdf.PdfReader(uploaded_file)
-        for page in reader.pages:
-            text = page.extract_text()
-            lines = text.split('\n')
-            is_dg = False
-            for i, line in enumerate(lines):
-                if "Kind 1" in line or "Dachschräge" in line:
-                    is_dg = True
+        for uploaded_file in uploaded_files:
+            reader = pypdf.PdfReader(uploaded_file)
+            for page in reader.pages:
+                text = page.extract_text()
+                lines = text.split('\n')
+                is_dg = False
+                for i, line in enumerate(lines):
+                    if "Kind 1" in line or "Dachschräge" in line or "DG" in line:
+                        is_dg = True
 
-                if "F:" in line and "m" in line:
-                    match = re.search(r"F:\s*([0-9.,]+)", line)
-                    if match:
-                        area_str = match.group(1).replace(',', '.')
-                        try:
-                            area = float(area_str)
-                            room_name = lines[i-1].strip() if i > 0 else "Raum"
-                            va = 10 if "Bad" in room_name else 15
-                            kreise = max(1, round(area / 18))
-                            
-                            room_data = {
-                                "Raumbezeichnung": room_name,
-                                "Fläche [m²]": area,
-                                "Verlegeabstand [cm]": va,
-                                "Heizkreise": kreise
-                            }
-                            
-                            if room_name in ["Kind 1", "Kind 2", "Schlafen", "Büro"] or (is_dg and room_name in ["Flur", "Bad"]):
-                                dg_rooms.append(room_data)
-                            else:
-                                eg_rooms.append(room_data)
-                        except ValueError:
-                            pass
+                    if "F:" in line and "m" in line:
+                        match = re.search(r"F:\s*([0-9.,]+)", line)
+                        if match:
+                            area_str = match.group(1).replace(',', '.')
+                            try:
+                                area = float(area_str)
+                                room_name = lines[i-1].strip() if i > 0 else "Raum"
+                                va = 10 if "Bad" in room_name else 15
+                                kreise = max(1, round(area / 18))
+                                
+                                room_data = {
+                                    "Raumbezeichnung": room_name,
+                                    "Fläche [m²]": area,
+                                    "Verlegeabstand [cm]": va,
+                                    "Heizkreise": kreise
+                                }
+                                
+                                if room_name in ["Kind 1", "Kind 2", "Schlafen", "Büro"] or (is_dg and room_name in ["Flur", "Bad"]):
+                                    dg_rooms.append(room_data)
+                                else:
+                                    eg_rooms.append(room_data)
+                            except ValueError:
+                                pass
         if eg_rooms or dg_rooms:
-            st.success("Plan erfolgreich nach Etagen (EG & DG) ausgelesen!")
+            st.success(f"Erfolgreich {len(uploaded_files)} Datei(en) eingelesen. Berechnung wurde neu gestartet!")
     except Exception as e:
-        st.error(f"Fehler beim Lesen der PDF: {e}")
+        st.error(f"Fehler beim Lesen der PDFs: {e}")
 
+# Fallback, falls keine Dateien hochgeladen wurden
 if not eg_rooms and not dg_rooms:
     eg_rooms = [
         {"Raumbezeichnung": "Wohnen / Essen / Kochen", "Fläche [m²]": 83.29, "Verlegeabstand [cm]": 15, "Heizkreise": 5},
