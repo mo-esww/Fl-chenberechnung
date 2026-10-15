@@ -68,7 +68,6 @@ st.markdown("Laden Sie Ihre Pläne hoch, weisen Sie die Ziel-Etage zu und klicke
 
 uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_multi")
 
-# Wenn Dateien hochgeladen wurden, weisen wir jeder Datei manuell eine Etage zu
 if uploaded_files:
     st.markdown("### 🗂️ Dateizuordnung zu den Etagen")
     file_assignments = {}
@@ -77,8 +76,7 @@ if uploaded_files:
     for idx, uploaded_file in enumerate(uploaded_files):
         with cols[idx % len(cols)]:
             st.markdown(f"**Datei:** `{uploaded_file.name}`")
-            # Intelligente Vorauserkennung für das Dropdown
-            default_idx = 1 # EG als Standard
+            default_idx = 1
             fn_upper = uploaded_file.name.upper()
             if "UG" in fn_upper or "KELLER" in fn_upper: default_idx = 0
             elif "EG" in fn_upper: default_idx = 1
@@ -94,7 +92,6 @@ if uploaded_files:
             )
             file_assignments[uploaded_file.name] = chosen_etage
 
-    # Button zum Einlesen
     if st.button("🔄 Pläne mit gewählter Zuordnung auslesen"):
         temp_etagen = st.session_state.etagen_daten.copy()
         
@@ -108,7 +105,7 @@ if uploaded_files:
                     lines = [line.strip() for line in text.split('\n') if line.strip()]
                     
                     for i, line in enumerate(lines):
-                        # CAD-spezifische Erkennung: Suche nach "m²" oder "m 2"
+                        # Suche nach Flächen im Format "XX.XX m²"
                         if "m²" in line or "m 2" in line or "F:" in line:
                             match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
                             if not match and "F:" in line:
@@ -120,32 +117,35 @@ if uploaded_files:
                                     area = float(val_str)
                                     
                                     if 1.0 < area < 500:
-                                        # Versuche, den Raumamen aus der gleichen Zeile oder direkter Umgebung zu finden
-                                        line_clean = re.sub(r'[0-9.,]+\s*m[²2]', '', line).strip()
+                                        # Raumnamen extrahieren (oft in derselben Zeile oder der Zeile davor/danach)
                                         room_name = ""
+                                        # Entferne die Zahl und m² aus der aktuellen Zeile, um Resttexte zu finden
+                                        clean_line = re.sub(r'[0-9.,]+\s*m[²2]', '', line).strip()
                                         
-                                        if len(line_clean) > 1 and not line_clean.isdigit():
-                                            room_name = line_clean
+                                        if len(clean_line) > 1 and not clean_line.isdigit():
+                                            room_name = clean_line
                                         else:
-                                            # Suche in Nachbarzeilen
+                                            # Suche in direkter Umgebung
                                             for offset in [-1, 1, -2, 2]:
                                                 idx_check = i + offset
                                                 if 0 <= idx_check < len(lines):
                                                     candidate = lines[idx_check]
-                                                    if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt"]):
+                                                    if not any(kw in candidate for kw in ["m²", "m 2", "Allplan", "Beetzendorf", "Blatt", "ÜNN", "H/B", "Architekt", "DATUM", "PROJEKT"]):
                                                         room_name = candidate
                                                         break
                                         
                                         if not room_name:
                                             room_name = "Raum"
 
-                                        # Bereinigungen des Namens
                                         room_name = room_name.replace("m²", "").strip()
+
+                                        # Verhindere, dass reine Zahlen als Raumname übernommen werden
+                                        if room_name.replace('.', '', 1).isdigit():
+                                            room_name = "Raum"
 
                                         va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
                                         kreise = max(1, round(area / 18))
                                         
-                                        # Verhindere Duplikate derselben Fläche in derselben Etage
                                         existing_areas = [r["Fläche [m²]"] for r in temp_etagen[target_etage]]
                                         if area not in existing_areas:
                                             temp_etagen[target_etage].append({
