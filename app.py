@@ -64,13 +64,13 @@ etagen_definitionen = {
 if "etagen_daten" not in st.session_state:
     st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-st.subheader("📐 PDF-Upload, JPG-Konvertierung & Raumanalyse")
-st.markdown("Laden Sie Ihre Plan-PDFs hoch. Die App konvertiert sie zu JPGs für die Vorschau und liest die Räume aus.")
+st.subheader("📐 Grundriss-Upload & Raumanalyse")
+st.markdown("Laden Sie Ihre Pläne hoch, wählen Sie die Ziel-Etage und starten Sie die Auswertung. Die Etagen-Tabellen erscheinen automatisch.")
 
-uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="pdf_fitz_upload")
+uploaded_files = st.file_uploader("Grundrisse hochladen (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="multi_format_upload")
 
 if uploaded_files:
-    st.markdown("### 🗂️ Konvertierte Pläne & Etagen-Zuweisung")
+    st.markdown("### 🗂️ Hochgeladene Pläne & Etagen-Zuweisung")
     file_assignments = {}
     
     if "converted_data" not in st.session_state:
@@ -173,8 +173,6 @@ if uploaded_files:
                                             va = 10 if any(b in room_name.lower() for b in ["bad", "wc", "duschbad"]) else 15
                                             
                                             rohr_gesamt = area * (100.0 / va + 1.5)
-                                            
-                                            # EXAKTE SCHWELLENWERT-PRÜFUNG: Erst ab 17.5 m² zwei Kreise
                                             kreise = 2 if area >= 17.5 else 1
                                             while (rohr_gesamt / kreise) > 125.0:
                                                 kreise += 1
@@ -192,7 +190,7 @@ if uploaded_files:
                                         pass
                                         
             st.session_state.etagen_daten = temp_etagen
-            st.success("Auswertung erfolgreich abgeschlossen! Die Tabellen wurden befüllt.")
+            st.success("Auswertung erfolgreich abgeschlossen! Die Etagen wurden befüllt.")
         except Exception as e:
             st.error(f"Fehler bei der Auswertung: {e}")
 else:
@@ -210,125 +208,138 @@ spalten_struktur = {
     "Heizkreise": []
 }
 
-# --- Dynamische Anzeige und Editierung für jede Etage ---
+# --- Dynamische Anzeige: Nur Etagen anzeigen, die Dateien zugewiesen bekommen haben oder befüllt sind ---
+aktive_etagen = set()
+if uploaded_files and 'file_assignments' in locals():
+    for f_name, etg in file_assignments.items():
+        aktive_etagen.add(etg)
+# Prüfe zusätzlich, ob bereits Daten im Session State für eine Etage existieren
+for etg_k, etg_v in st.session_state.etagen_daten.items():
+    if len(etg_v) > 0:
+        aktive_etagen.add(etg_k)
+
 etagen_ergebnisse = {}
 warnungen_gesamt = []
 
-for etage_key, etage_titel in etagen_definitionen.items():
-    st.markdown(f"### 🏢 {etage_titel} ({etage_key})")
-    
-    current_data = st.session_state.etagen_daten[etage_key]
-    if not current_data:
-        df_etage = pd.DataFrame(columns=list(spalten_struktur.keys()))
-    else:
-        df_etage = pd.DataFrame(data=current_data)
-        if "Status" not in df_etage.columns:
-            df_etage.insert(0, "Status", "Beheizt")
+if aktive_etagen:
+    for etage_key, etage_titel in etagen_definitionen.items():
+        if etage_key not in aktive_etagen:
+            continue  # Überspringe Etagen, die keine Zuweisung haben
             
-        # Heizkreise beim Laden direkt anhand der aktuellen Fläche & 17,5m²-Regel neu berechnen
-        for idx, row in df_etage.iterrows():
-            fl = row.get("Fläche [m²]", 0)
-            va = row.get("Verlegeabstand [cm]", 15)
-            if pd.notna(fl) and fl > 0 and pd.notna(va) and va > 0:
-                rohr_gesamt = fl * (100.0 / va + 1.5)
-                k = 2 if fl >= 17.5 else 1
-                while (rohr_gesamt / k) > 125.0:
-                    k += 1
-                df_etage.at[idx, "Heizkreise"] = k
-    
-    # Dynamische Höhe ohne Scrollbalken
-    num_rows = len(df_etage) if not df_etage.empty else 1
-    editor_height = int((num_rows + 2) * 38) + 40
-    
-    edited_df = st.data_editor(
-        df_etage, 
-        num_rows="dynamic", 
-        use_container_width=True, 
-        height=editor_height,
-        key=f"editor_{etage_key}",
-        column_config={
-            "Status": st.column_config.SelectboxColumn(
-                "Status",
-                help="Wählen Sie aus, ob der Raum beheizt oder unbeheizt ist.",
-                options=["Beheizt", "Unbeheizt"],
-                required=True,
-                default="Beheizt"
-            )
-        },
-        placeholder="Klicken Sie oben auf den Auslesen-Button oder fügen Sie Räume hinzu..."
-    )
-    
-    st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
-    
-    e_flaeche = 0
-    e_unbeheizt = 0
-    e_kreise = 0
-    e_rohr = 0
-    
-    if not edited_df.empty and "Status" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
-        df_active = edited_df[edited_df["Status"] == "Beheizt"]
-        df_inactive = edited_df[edited_df["Status"] == "Unbeheizt"]
+        st.markdown(f"### 🏢 {etage_titel} ({etage_key})")
         
-        e_flaeche = df_active["Fläche [m²]"].sum() if not df_active.empty else 0
-        e_unbeheizt = df_inactive["Fläche [m²]"].sum() if not df_inactive.empty else 0
-        e_kreise = int(df_active["Heizkreise"].sum()) if not df_active.empty and "Heizkreise" in df_active.columns else 0
-        
-        if not df_active.empty and "Verlegeabstand [cm]" in df_active.columns and "Heizkreise" in df_active.columns:
-            for _, row in df_active.iterrows():
-                va = row.get("Verlegeabstand [cm]", 0)
-                fl = row.get("Fläche [m²]", 0)
-                kr = row.get("Heizkreise", 1)
-                room_name = row.get("Raumbezeichnung", "Unbekannt")
+        current_data = st.session_state.etagen_daten[etage_key]
+        if not current_data:
+            df_etage = pd.DataFrame(columns=list(spalten_struktur.keys()))
+        else:
+            df_etage = pd.DataFrame(data=current_data)
+            if "Status" not in df_etage.columns:
+                df_etage.insert(0, "Status", "Beheizt")
                 
-                if pd.notna(va) and pd.notna(fl) and va > 0:
-                    raum_rohr = fl * (100.0 / va + 1.5)
-                    e_rohr += raum_rohr
-                    
-                    if kr > 0:
-                        rohr_pro_kreis = raum_rohr / kr
-                        if rohr_pro_kreis > 125.0:
-                            min_k = int(np.ceil(raum_rohr / 125.0))
-                            warnung_txt = f"⚠️ **{etage_key} - {room_name}**: Ein Heizkreis hat ca. {rohr_pro_kreis:.1f} m (Limit: 125 m). Bitte Heizkreise auf mindestens {min_k} erhöhen!"
-                            warnungen_gesamt.append(warnung_txt)
-    
-    etagen_ergebnisse[etage_key] = {
-        "flaeche": e_flaeche, 
-        "unbeheizt": e_unbeheizt, 
-        "kreise": e_kreise, 
-        "rohr": e_rohr
-    }
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric(label=f"Beheizte Fläche {etage_key}", value=f"{e_flaeche:.2f} m²")
-    with col2:
-        st.metric(label=f"Unbeheizte Fläche {etage_key}", value=f"{e_unbeheizt:.2f} m²")
-    with col3:
-        st.metric(label=f"Heizkreise {etage_key}", value=f"{e_kreise} Kreise")
-    with col4:
-        st.metric(label=f"Rohrbedarf {etage_key}", value=f"{e_rohr:.0f} m")
+            for idx, row in df_etage.iterrows():
+                fl = row.get("Fläche [m²]", 0)
+                va = row.get("Verlegeabstand [cm]", 15)
+                if pd.notna(fl) and fl > 0 and pd.notna(va) and va > 0:
+                    rohr_gesamt = fl * (100.0 / va + 1.5)
+                    k = 2 if fl >= 17.5 else 1
+                    while (rohr_gesamt / k) > 125.0:
+                        k += 1
+                    df_etage.at[idx, "Heizkreise"] = k
         
-    st.markdown("---")
+        num_rows = len(df_etage) if not df_etage.empty else 1
+        editor_height = int((num_rows + 2) * 38) + 40
+        
+        edited_df = st.data_editor(
+            df_etage, 
+            num_rows="dynamic", 
+            use_container_width=True, 
+            height=editor_height,
+            key=f"editor_{etage_key}",
+            column_config={
+                "Status": st.column_config.SelectboxColumn(
+                    "Status",
+                    help="Wählen Sie aus, ob der Raum beheizt oder unbeheizt ist.",
+                    options=["Beheizt", "Unbeheizt"],
+                    required=True,
+                    default="Beheizt"
+                )
+            },
+            placeholder="Fügen Sie Räume hinzu oder lesen Sie Pläne aus..."
+        )
+        
+        st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
+        
+        e_flaeche = 0
+        e_unbeheizt = 0
+        e_kreise = 0
+        e_rohr = 0
+        
+        if not edited_df.empty and "Status" in edited_df.columns and "Fläche [m²]" in edited_df.columns:
+            df_active = edited_df[edited_df["Status"] == "Beheizt"]
+            df_inactive = edited_df[edited_df["Status"] == "Unbeheizt"]
+            
+            e_flaeche = df_active["Fläche [m²]"].sum() if not df_active.empty else 0
+            e_unbeheizt = df_inactive["Fläche [m²]"].sum() if not df_inactive.empty else 0
+            e_kreise = int(df_active["Heizkreise"].sum()) if not df_active.empty and "Heizkreise" in df_active.columns else 0
+            
+            if not df_active.empty and "Verlegeabstand [cm]" in df_active.columns and "Heizkreise" in df_active.columns:
+                for _, row in df_active.iterrows():
+                    va = row.get("Verlegeabstand [cm]", 0)
+                    fl = row.get("Fläche [m²]", 0)
+                    kr = row.get("Heizkreise", 1)
+                    room_name = row.get("Raumbezeichnung", "Unbekannt")
+                    
+                    if pd.notna(va) and pd.notna(fl) and va > 0:
+                        raum_rohr = fl * (100.0 / va + 1.5)
+                        e_rohr += raum_rohr
+                        
+                        if kr > 0:
+                            rohr_pro_kreis = raum_rohr / kr
+                            if rohr_pro_kreis > 125.0:
+                                min_k = int(np.ceil(raum_rohr / 125.0))
+                                warnung_txt = f"⚠️ **{etage_key} - {room_name}**: Ein Heizkreis hat ca. {rohr_pro_kreis:.1f} m (Limit: 125 m). Bitte Heizkreise auf mindestens {min_k} erhöhen!"
+                                warnungen_gesamt.append(warnung_txt)
+        
+        etagen_ergebnisse[etage_key] = {
+            "flaeche": e_flaeche, 
+            "unbeheizt": e_unbeheizt, 
+            "kreise": e_kreise, 
+            "rohr": e_rohr
+        }
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric(label=f"Beheizte Fläche {etage_key}", value=f"{e_flaeche:.2f} m²")
+        with col2:
+            st.metric(label=f"Unbeheizte Fläche {etage_key}", value=f"{e_unbeheizt:.2f} m²")
+        with col3:
+            st.metric(label=f"Heizkreise {etage_key}", value=f"{e_kreise} Kreise")
+        with col4:
+            st.metric(label=f"Rohrbedarf {etage_key}", value=f"{e_rohr:.0f} m")
+            
+        st.markdown("---")
 
-if warnungen_gesamt:
-    st.error("### ⚠️ Hinweis zur max. Heizkreislänge (125m)")
-    for w in warnungen_gesamt:
-        st.warning(w)
-    st.markdown("---")
+    if warnungen_gesamt:
+        st.error("### ⚠️ Hinweis zur max. Heizkreislänge (125m)")
+        for w in warnungen_gesamt:
+            st.warning(w)
+        st.markdown("---")
 
-# --- Summiertes Gesamtergebnis ---
-total_flaeche = sum([res["flaeche"] for res in etagen_ergebnisse.values()])
-total_unbeheizt = sum([res["unbeheizt"] for res in etagen_ergebnisse.values()])
-total_rohr = sum([res["rohr"] for res in etagen_ergebnisse.values()])
-kreise_str = " | ".join([f"{k}: {res['kreise']}" for k, res in etagen_ergebnisse.items() if res['kreise'] > 0])
+    # --- Summiertes Gesamtergebnis ---
+    total_flaeche = sum([res["flaeche"] for res in etagen_ergebnisse.values()])
+    total_unbeheizt = sum([res["unbeheizt"] for res in etagen_ergebnisse.values()])
+    total_rohr = sum([res["rohr"] for res in etagen_ergebnisse.values()])
+    kreise_str = " | ".join([f"{k}: {res['kreise']}" for k, res in etagen_ergebnisse.items() if res['kreise'] > 0])
 
-st.subheader("📈 Summiertes Gesamtergebnis (Gesamtgebäude)")
-col_f1, col_f2, col_f3, col_f4 = st.columns(4)
-with col_f1:
-    st.metric(label="Gesamt-Beheizte Fläche", value=f"{total_flaeche:.2f} m²")
-with col_f2:
-    st.metric(label="Gesamt-Unbeheizte Fläche", value=f"{total_unbeheizt:.2f} m²")
-with col_f3:
-    st.metric(label="Heizkreise je Verteiler", value=kreise_str if kreise_str else "0 Kreise")
-with col_f4:
-    st.metric(label="Gesamter Rohrbedarf", value=f"{total_rohr:.0f} m")
+    st.subheader("📈 Summiertes Gesamtergebnis (Gesamtgebäude)")
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    with col_f1:
+        st.metric(label="Gesamt-Beheizte Fläche", value=f"{total_flaeche:.2f} m²")
+    with col_f2:
+        st.metric(label="Gesamt-Unbeheizte Fläche", value=f"{total_unbeheizt:.2f} m²")
+    with col_f3:
+        st.metric(label="Heizkreise je Verteiler", value=kreise_str if kreise_str else "0 Kreise")
+    with col_f4:
+        st.metric(label="Gesamter Rohrbedarf", value=f"{total_rohr:.0f} m")
+else:
+    st.info("ℹ️ Bitte laden Sie oben Pläne hoch und ordnen Sie diese den entsprechenden Etagen zu, um die Berechnungen zu starten.")
