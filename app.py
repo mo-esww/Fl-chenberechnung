@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import pypdf
+import re
 
 # --- Seiten-Konfiguration & Corporate Design ---
 st.set_page_config(
@@ -45,7 +47,7 @@ with col_logo:
 
 with col_title:
     st.title("Fußbodenheizungs-Planer für Wohngebäude")
-    st.markdown("*Etagenbasierte Raumplanung, Rohrnetz-Dimensionierung & Kreise-Zuordnung*")
+    st.markdown("*Automatisierte Grundriss-Auswertung (Multi-Upload) & Etagen-Zuweisung*")
     st.markdown("Ersetzt keine Heizlastberechnung nach Norm 12831")
 
 st.markdown("---")
@@ -53,8 +55,8 @@ st.markdown("---")
 # ==========================================
 # FUSSBODENHEIZUNG & MEHR-ETAGEN-PLANUNG
 # ==========================================
-st.subheader("📐 Raum- und Etagen-Management (UG, EG, OG, DG)")
-st.markdown("Tragen Sie Ihre Räume, Flächen und Verlegeabstände direkt in die etagenbezogenen Tabellen ein.")
+st.subheader("📐 Automatische Grundriss-Auswertung & Tabellen-Befüllung")
+st.markdown("Laden Sie hier Ihre Plan-PDFs hoch. Die Tabellen füllen sich automatisch mit den erkannten Räumen und Flächen.")
 
 etagen_definitionen = {
     "UG": "Untergeschoss / Keller",
@@ -63,19 +65,88 @@ etagen_definitionen = {
     "DG": "Dachgeschoss"
 }
 
-# Initialisierung der Tabellen im Session State mit leeren DataFrames
+# Initialisierung der Session State Daten (standardmäßig leer)
 if "etagen_daten" not in st.session_state:
-    st.session_state.etagen_daten = {
-        "UG": [],
-        "EG": [],
-        "OG": [],
-        "DG": []
-    }
+    st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
 
-# Optionaler Upload-Bereich (optional zur Dokumentation)
-st.file_uploader("Pläne zur Dokumentation hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_dummy")
+if "last_uploaded_files" not in st.session_state:
+    st.session_state.last_uploaded_files = []
 
-# Definieren der Spaltenstruktur für leere Tabellen
+# Datei-Upload für mehrere PDFs
+uploaded_files = st.file_uploader("Grundrisse hochladen (PDF)", type=["pdf"], accept_multiple_files=True, key="pdf_upload_multi")
+
+uploaded_files_names = [f.name for f in uploaded_files] if uploaded_files else []
+
+# Wenn neue Dateien hochgeladen oder entfernt werden, verarbeiten wir den Upload neu
+if uploaded_files_names != st.session_state.last_uploaded_files:
+    st.session_state.last_uploaded_files = uploaded_files_names
+    
+    # Etagen-Daten zurücksetzen
+    temp_etagen = {k: [] for k in etagen_definitionen.keys()}
+    
+    if uploaded_files:
+        try:
+            for uploaded_file in uploaded_files:
+                filename_upper = uploaded_file.name.upper()
+                ziel_etage = "EG" # Standard-Fallback
+                for etage_key in etagen_definitionen.keys():
+                    if etage_key in filename_upper:
+                        ziel_etage = etage_key
+
+                reader = pypdf.PdfReader(uploaded_file)
+                for page in reader.pages:
+                    text = page.extract_text()
+                    lines = [line.strip() for line in text.split('\n') if line.strip()]
+                    
+                    for i, line in enumerate(lines):
+                        area = None
+                        room_name = ""
+
+                        # Erkennung von Flächenformaten (z.B. "55.04 m²" oder "F: 12.11 m 2")
+                        if "m²" in line or "m 2" in line or "F:" in line:
+                            match = re.search(r'([0-9.,]+)\s*(?:m[²2]|m\s*2)', line)
+                            if not match and "F:" in line:
+                                match = re.search(r"F:\s*([0-9.,]+)", line)
+                                
+                            if match:
+                                try:
+                                    val_str = match.group(1).replace(',', '.')
+                                    area = float(val_str)
+                                    if i > 0:
+                                        room_name = lines[i-1]
+                                    if not room_name or len(room_name) < 2 or any(char.isdigit() for char in room_name):
+                                        if i > 1:
+                                            room_name = lines[i-2]
+                                except ValueError:
+                                    pass
+
+                        if area is not None and 1.0 < area < 500:
+                            if any(x in room_name for x in ["Allplan", "Beetzendorf", "Blatt", "Architekt", "Stg", "Mauer", "ÜNN"]):
+                                continue
+                            if not room_name:
+                                room_name = "Raum"
+
+                            va = 10 if "bad" in room_name.lower() or "wc" in room_name.lower() or "duschbad" in room_name.lower() else 15
+                            kreise = max(1, round(area / 18))
+                            
+                            # Vermeide exakte Doppelteinträge
+                            existing_areas = [r["Fläche [m²]"] for r in temp_etagen[ziel_etage]]
+                            if area not in existing_areas:
+                                temp_etagen[ziel_etage].append({
+                                "Raumbezeichnung": room_name,
+                                "Fläche [m²]": area,
+                                "Verlegeabstand [cm]": va,
+                                "Heizkreise": kreise
+                            })
+            
+            st.session_state.etagen_daten = temp_etagen
+            st.success("Pläne erfolgreich eingelesen und Tabellen automatisch befüllt!")
+        except Exception as e:
+            st.error(f"Fehler beim Auslesen der Dateien: {e}")
+    else:
+        # Wenn alle Dateien gelöscht wurden, bleiben die Tabellen leer
+        st.session_state.etagen_daten = {k: [] for k in etagen_definitionen.keys()}
+
 spalten_struktur = {
     "Raumbezeichnung": [],
     "Fläche [m²]": [],
@@ -89,26 +160,22 @@ etagen_ergebnisse = {}
 for etage_key, etage_titel in etagen_definitionen.items():
     st.markdown(f"### 🏢 {etage_titel} ({etage_key})")
     
-    # Wenn die Liste für diese Etage leer ist, übergeben wir eine strukturierte leere Tabelle
     current_data = st.session_state.etagen_daten[etage_key]
     if not current_data:
         df_etage = pd.DataFrame(columns=list(spalten_struktur.keys()))
     else:
         df_etage = pd.DataFrame(current_data)
     
-    # Interaktiver Editor für den Anwender
     edited_df = st.data_editor(
         df_etage, 
         num_rows="dynamic", 
         use_container_width=True, 
         key=f"editor_{etage_key}",
-        placeholder="Klicken Sie hier, um Räume hinzuzufügen..."
+        placeholder="Keine Räume vorhanden. Laden Sie einen Plan hoch oder fügen Sie manuell Zeilen hinzu..."
     )
     
-    # Aktualisieren des Session States
     st.session_state.etagen_daten[etage_key] = edited_df.to_dict('records')
     
-    # Berechnungen pro Etage (nur wenn Daten vorhanden sind)
     e_flaeche = edited_df["Fläche [m²]"].sum() if not edited_df.empty and "Fläche [m²]" in edited_df.columns else 0
     e_kreise = int(edited_df["Heizkreise"].sum()) if not edited_df.empty and "Heizkreise" in edited_df.columns else 0
     
@@ -132,7 +199,7 @@ for etage_key, etage_titel in etagen_definitionen.items():
         
     st.markdown("---")
 
-# --- Summiertes Gesamtergebnis über alle Etagen ---
+# --- Summiertes Gesamtergebnis ---
 total_flaeche = sum([res["flaeche"] for res in etagen_ergebnisse.values()])
 total_rohr = sum([res["rohr"] for res in etagen_ergebnisse.values()])
 kreise_str = " | ".join([f"{k}: {res['kreise']}" for k, res in etagen_ergebnisse.items() if res['kreise'] > 0])
