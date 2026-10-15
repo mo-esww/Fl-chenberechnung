@@ -120,33 +120,52 @@ if not eg_rooms and not dg_rooms:
         {"Raumbezeichnung": "Flur", "Fläche [m²]": 5.89, "Verlegeabstand [cm]": 15, "Heizkreise": 1},
     ]
 
+# --- Erdgeschoss ---
 st.markdown("### 🏠 Erdgeschoss (EG)")
 df_eg = pd.DataFrame(eg_rooms)
 edited_eg = st.data_editor(df_eg, num_rows="dynamic", use_container_width=True, key="editor_eg")
 
+eg_flaeche = edited_eg["Fläche [m²]"].sum() if not edited_eg.empty else 0
+eg_kreise = int(edited_eg["Heizkreise"].sum()) if not edited_eg.empty else 0
+eg_rohr = sum([fl * (100.0 / va + 1.5) for _, row in edited_eg.iterrows() for va, fl in [(row["Verlegeabstand [cm]"], row["Fläche [m²]"])] if va > 0]) if not edited_eg.empty else 0
+
+col_e1, col_e2, col_e3 = st.columns(3)
+with col_e1:
+    st.metric(label="Fläche EG", value=f"{eg_flaeche:.2f} m²")
+with col_e2:
+    st.metric(label="Heizkreise EG (Verteiler)", value=f"{eg_kreise} Kreise")
+with col_e3:
+    st.metric(label="Rohrbedarf EG", value=f"{eg_rohr:.0f} Meter")
+
+st.markdown("---")
+
+# --- Dachgeschoss ---
 st.markdown("### 🏠 Dachgeschoss (DG)")
 df_dg = pd.DataFrame(dg_rooms)
 edited_dg = st.data_editor(df_dg, num_rows="dynamic", use_container_width=True, key="editor_dg")
 
-gesamt_flaeche = (edited_eg["Fläche [m²]"].sum() if not edited_eg.empty else 0) + (edited_dg["Fläche [m²]"].sum() if not edited_dg.empty else 0)
-gesamt_kreise = (int(edited_eg["Heizkreise"].sum()) if not edited_eg.empty else 0) + (int(edited_dg["Heizkreise"].sum()) if not edited_dg.empty else 0)
+dg_flaeche = edited_dg["Fläche [m²]"].sum() if not edited_dg.empty else 0
+dg_kreise = int(edited_dg["Heizkreise"].sum()) if not edited_dg.empty else 0
+dg_rohr = sum([fl * (100.0 / va + 1.5) for _, row in edited_dg.iterrows() for va, fl in [(row["Verlegeabstand [cm]"], row["Fläche [m²]"])] if va > 0]) if not edited_dg.empty else 0
 
-rohrbedarf_gesamt = 0
-for df_etage in [edited_eg, edited_dg]:
-    if not df_etage.empty:
-        for _, row in df_etage.iterrows():
-            va = row["Verlegeabstand [cm]"]
-            fl = row["Fläche [m²]"]
-            if va > 0:
-                faktor = 100.0 / va + 1.5
-                rohrbedarf_gesamt += fl * faktor
+col_d1, col_d2, col_d3 = st.columns(3)
+with col_d1:
+    st.metric(label="Fläche DG", value=f"{dg_flaeche:.2f} m²")
+with col_d2:
+    st.metric(label="Heizkreise DG (Verteiler)", value=f"{dg_kreise} Kreise")
+with col_d3:
+    st.metric(label="Rohrbedarf DG", value=f"{dg_rohr:.0f} Meter")
+
+# --- Summiertes Gesamtergebnis ---
+gesamt_flaeche = eg_flaeche + dg_flaeche
+rohrbedarf_gesamt = eg_rohr + dg_rohr
 
 st.markdown("---")
-st.subheader("📈 Gesamt-Auswertung über alle Etagen")
+st.subheader("📈 Summiertes Gesamtergebnis (Gesamtgebäude)")
 col_f1, col_f2, col_f3 = st.columns(3)
 with col_f1:
     st.metric(label="Gesamt-Beheizte Fläche", value=f"{gesamt_flaeche:.2f} m²")
 with col_f2:
-    st.metric(label="Anzahl Heizkreise gesamt", value=f"{gesamt_kreise} Kreise")
+    st.metric(label="Heizkreise getrennt", value=f"EG: {eg_kreise} | DG: {dg_kreise}")
 with col_f3:
-    st.metric(label="Geschätzter Rohrbedarf gesamt", value=f"{rohrbedarf_gesamt:.0f} Meter")
+    st.metric(label="Gesamter Rohrbedarf", value=f"{rohrbedarf_gesamt:.0f} Meter")
