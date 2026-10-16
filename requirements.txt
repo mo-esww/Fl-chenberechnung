@@ -1,6 +1,6 @@
 streamlit
+pymupdf
+google-genai
 pandas
-numpy
-PyMuPDF
-pytesseract
-Pillow
+openpyxl
+pillow
