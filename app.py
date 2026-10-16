@@ -1,123 +1,105 @@
-import streamlit as st
-import fitz  # PyMuPDF
-import pandas as pd
-from PIL import Image
+"""Überschlägige Flächenheizungs-Auslegung aus Raum-/Flächenlisten (Excel, CSV, PDF).
+
+Alle Rechenwerte sind Näherungen für die frühe Planungsphase (LP 2/3) und
+ersetzen KEINE Heizlastberechnung nach DIN EN 12831 bzw. Auslegung nach DIN EN 1264.
+"""
 import io
-import json
-from google import genai
-from google.genai import types
+import math
+import re
 
-st.set_page_config(page_title="CAD Flächenheizungs-Auslegung", layout="wide")
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 
-st.title("🏠 Automatisierte Flächenheizungsauslegung aus PDF-Plänen")
-st.write("Laden Sie Ihren CAD-Plan (PDF) hoch. Die KI liest Räume und Flächen aus und berechnet die überschlägige Fußbodenheizung.")
+try:
+    import pdfplumber
+except ImportError:  # PDF-Import optional
+    pdfplumber = None
 
-# Sidebar für API-Key
-st.sidebar.header("Konfiguration")
-api_key_input = st.sidebar.text_input("Google Gemini API Key", type="password")
+st.set_page_config(page_title="Flächenheizung – Überschlag", layout="wide")
 
-# Datei-Upload
-uploaded_file = st.file_uploader("CAD-Plan als PDF hochladen", type=["pdf"])
+# ----------------------------------------------------------------------------
+# 1) Einlesen & Normalisieren
+# ----------------------------------------------------------------------------
+SYNONYME = {
+    "Raumnr": ["raumnr", "raum-nr", "raumnummer", "r-nr", "nr", "nummer", "pos"],
+    "Fläche m²": ["fläche", "flaeche", "nutzfläche", "grundfläche", "nf", "fl.",
+                  "area", "m²", "m2", "qm", "wohnfläche"],
+    "Geschoss": ["geschoss", "ebene", "etage", "level", "stockwerk", "gesch."],
+    "Raum": ["raumbezeichnung", "bezeichnung", "raumname", "raum", "nutzung",
+             "name", "room", "raumart"],
+}
 
-if uploaded_file is not None:
-    if not api_key_input:
-        st.warning("Bitte geben Sie Ihren Google Gemini API Key in der Seitenleiste ein.")
+GESCHOSS_RE = re.compile(
+    r"\b(UG|KG|EG|DG|\d?\.?\s?OG\s?\d?|Untergeschoss|Kellergeschoss|Erdgeschoss|"
+    r"Obergeschoss|Dachgeschoss)\b", re.I)
+
+ZEILE_RE = re.compile(
+    r"^\s*(?:(?P<nr>[A-Za-z]{0,3}\d[\d.\-/]*)\s+)?"
+    r"(?P<name>[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß0-9 .\-/()]{1,40}?)\s+"
+    r"(?P<flaeche>\d{1,4}[.,]\d{1,2})\s*(?:m²|m2|qm)?\s*$"
+)
+
+
+def zahl(x):
+    """'12,34', '12.34 m²', '1.234,56' -> float."""
+    if x is None:
+        return None
+    if isinstance(x, (int, float)):
+        return None if pd.isna(x) else float(x)
+    s = str(x).lower()
+    for u in ("m²", "m2", "qm"):
+        s = s.replace(u, "")
+    s = re.sub(r"[^\d,.\-]", "", s)
+    if not s:
+        return None
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
     else:
-        if st.button("Plan analysieren & Auslegung starten", type="primary"):
-            with st.spinner("Analysiere Plan mit KI... Bitte einen Moment Geduld."):
-                try:
-                    # PDF einlesen via PyMuPDF
-                    pdf_bytes = uploaded_file.read()
-                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                    page = doc[0]  # Erste Seite
-                    pix = page.get_pixmap(dpi=200)
-                    bild = Image.open(io.BytesIO(pix.tobytes("png")))
-                    
-                    # Gemini Client initialisieren
-                    client = genai.Client(api_key=api_key_input)
-                    
-                    prompt = """
-                    Analysiere diesen Architektur- oder CAD-Plan. 
-                    Deine Aufgabe ist es, alle auf dem Plan verzeichneten Räume mit ihrer Bezeichnung und ihrer Fläche in Quadratmetern (m²) zu extrahieren.
-                    Erkenne zudem anhand der Raumbezeichnung die Nutzungsart (z.B. Bad, Wohnen, Schlafzimmer, Flur, Küche, Büro).
-                    
-                    Gib das Ergebnis AUSSCHLIESSLICH als valides JSON-Array im folgenden Format zurück, ohne zusätzlichen Markdown-Text:
-                    [
-                      {
-                        "raum_name": "Wohnen / Essen",
-                        "nutzungstyp": "Wohnen",
-                        "flaeche_m2": 35.5
-                      }
-                    ]
-                    """
-                    
-                    # Aktualisiertes Modell auf gemini-3.8-flash
-                    response = client.models.generate_content(
-                        model='gemini-3.8-flash',
-                        contents=[bild, prompt],
-                        config=types.GenerateContentConfig(response_mime_type="application/json"),
-                    )
-                    
-                    raeume_data = json.loads(response.text)
-                    
-                    # Berechnungslogik & Temperaturen definiert
-                    ergebnisse = []
-                    temperaturen = {
-                        "Bad": 24.0, 
-                        "Wohnen": 20.0, 
-                        "Küche": 20.0, 
-                        "Büro": 20.0, 
-                        "Schlafen": 18.0, 
-                        "Flur": 18.0, 
-                        "Standard": 20.0
-                    }
-                    
-                    for raum in raeume_data:
-                        name = raum.get("raum_name", "Unbekannt")
-                        nutzung = raum.get("nutzungstyp", "Standard")
-                        flaeche = float(raum.get("flaeche_m2", 0.0))
-                        
-                        soll_temp = temperatures.get(nutzung, temperatures["Standard"])
-                        spez_last = 50.0 if nutzung == "Bad" else 35.0
-                        heizlast_watt = flaeche * spez_last
-                        
-                        if spez_last > 45 or nutzung == "Bad":
-                            va = 10
-                        elif spez_last > 30:
-                            va = 15
-                        else:
-                            va = 20
-                            
-                        rohr_m = round(flaeche * (100 / va) * 1.15, 1)
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
-                        ergebnisse.append({
-                            "Raumbezeichnung": name,
-                            "Nutzungsart": nutzung,
-                            "Fläche [m²]": flaeche,
-                            "Soll-Temp [°C]": soll_temp,
-                            "Heizlast [W]": round(heizlast_watt, 1),
-                            "Verlegeabstand [cm]": va,
-                            "Rohrlauf [m]": rohr_m
-                        })
-                        
-                    df = pd.DataFrame(ergebnisse)
-                    
-                    # Erfolg ausgeben
-                    st.success(f"Erfolgreich {len(df)} Räume erkannt!")
-                    st.dataframe(df, use_container_width=True)
-                    
-                    # Excel Download vorbereiten
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        df.to_excel(writer, index=False, sheet_name='Heizungsauslegung')
-                    excel_data = output.getvalue()
-                    
-                    st.download_button(
-                        label="📥 Excel-Tabelle herunterladen",
-                        data=excel_data,
-                        file_name="heizungsauslegung.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    
-                except Exception as e:
-                    st.error(f"Ein Fehler ist aufgetreten: {e}")
+
+def normalisiere(df: pd.DataFrame):
+    """Spalten anhand von Synonymen zuordnen. Gibt None zurück, wenn Raum+Fläche fehlen."""
+    df = df.copy()
+    df.columns = [str(c).strip().lower() if c is not None else "" for c in df.columns]
+    zuordnung, belegt = {}, set()
+    for ziel in ["Raumnr", "Fläche m²", "Geschoss", "Raum"]:
+        syn = SYNONYME[ziel]
+        treffer = next((c for c in df.columns if c in syn and c not in belegt), None)
+        if treffer is None:
+            treffer = next((c for c in df.columns
+                            if c not in belegt and any(s in c for s in syn)), None)
+        if treffer:
+            zuordnung[ziel] = treffer
+            belegt.add(treffer)
+    if "Raum" not in zuordnung or "Fläche m²" not in zuordnung:
+        return None
+    out = pd.DataFrame({
+        "Geschoss": df[zuordnung["Geschoss"]] if "Geschoss" in zuordnung else "",
+        "Raumnr": df[zuordnung["Raumnr"]] if "Raumnr" in zuordnung else "",
+        "Raum": df[zuordnung["Raum"]].astype(str).str.strip(),
+        "Fläche m²": df[zuordnung["Fläche m²"]].map(zahl),
+    })
+    out = out[out["Fläche m²"].notna() & (out["Fläche m²"] > 0)]
+    out = out[~out["Raum"].str.lower().str.contains("summe|gesamt|total", na=False)]
+    return out
+
+
+def lese_tabelle(datei) -> pd.DataFrame:
+    name = datei.name.lower()
+    teile = []
+    if name.endswith(".csv"):
+        roh = pd.read_csv(datei, sep=None, engine="python", dtype=str)
+        n = normalisiere(roh)
+        if n is not None:
+            teile.append(n)
+    else:
+        for blatt, roh in pd.read_excel(datei, sheet_name=None, dtype=str).items():
+            n = normalisiere(roh)
+            if n is not None:
+                if (n["Geschoss"].astype(str).str.strip() == "").all():
