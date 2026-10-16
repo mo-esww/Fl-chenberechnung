@@ -51,7 +51,7 @@ if uploaded_file is not None:
                     ]
                     """
                     
-                    # Korrigiertes Modell für die aktuelle API
+                    # Aktualisiertes Modell laut API-Fehlermeldung
                     response = client.models.generate_content(
                         model='gemini-2.5-flash',
                         contents=[bild, prompt],
