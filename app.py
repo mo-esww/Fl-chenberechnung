@@ -51,18 +51,25 @@ if uploaded_file is not None:
                     ]
                     """
                     
-                    # Korrektes aktuelles Modell laut Fehlermeldung
                     response = client.models.generate_content(
-                        model='gemini-3.8-flash',
+                        model='gemini-2.5-flash',
                         contents=[bild, prompt],
                         config=types.GenerateContentConfig(response_mime_type="application/json"),
                     )
                     
                     raeume_data = json.loads(response.text)
                     
-                    # Berechnungslogik
+                    # Berechnungslogik & Temperaturen definiert
                     ergebnisse = []
-                    temperaturen = {"Bad": 24.0, "Wohnen": 20.0, "Küche": 20.0, "Büro": 20.0, "Schlafen": 18.0, "Flur": 18.0, "Standard": 20.0}
+                    temperaturen = {
+                        "Bad": 24.0, 
+                        "Wohnen": 20.0, 
+                        "Küche": 20.0, 
+                        "Büro": 20.0, 
+                        "Schlafen": 18.0, 
+                        "Flur": 18.0, 
+                        "Standard": 20.0
+                    }
                     
                     for raum in raeume_data:
                         name = raum.get("raum_name", "Unbekannt")
